@@ -52,6 +52,8 @@ export const pieceMoving = (state: number): boolean =>
  * object): a double handed to a call V8 declines to inline is boxed — one
  * HeapNumber per piece per frame (O5's rule) — so the time rides in here. */
 export const PHYS_CLOCK = { tMs: 0 };
+/** The frame being ingested's host time (PhysPoses.take reads it). */
+const INGEST = { t: 0 };
 
 /** Frames each collapse keeps outside a lab: 0.6 s at 20 Hz — the page's
  * render clock trails the host by ~100–200 ms. */
@@ -233,6 +235,14 @@ export class PhysPoses {
   /** Add a frame at host time `t` from `src` (the record's piece block at
    * `at`). A frame older than the newest is dropped. */
   push(t: number, src: Float32Array, at: number, settled: boolean): void {
+    INGEST.t = t;
+    this.take(src, at, settled);
+  }
+
+  /** push() at INGEST.t (the registry's per-record form: no double handed
+   * on, O5). */
+  take(src: Float32Array, at: number, settled: boolean): void {
+    const t = INGEST.t;
     if (this.count > 0 && t < this.last) return;
     if (this.settled) return;
     const len = this.n * PIECE_STRIDE;
@@ -418,6 +428,8 @@ export class PhysRegistry {
   /** The physics' epoch the registry holds (a room reset bumps it). */
   epoch = -1;
   private readonly poses = new Map<number, PhysPoses>();
+  /** The last frame's collapses, in its order (ingest's fast path). */
+  private readonly order: PhysPoses[] = [];
   private list: readonly PhysTarget[] | null = null;
   /** Bumped on every frame ingested. */
   version = 0;
@@ -449,10 +461,12 @@ export class PhysRegistry {
   /** Forget collapse `id` of `building` (a rebuild dropped it). */
   drop(id: number, building: number): void {
     this.poses.delete(keyOf(id, building));
+    this.order.length = 0;
   }
 
   clear(): void {
     this.poses.clear();
+    this.order.length = 0;
     if (this.list) for (const c of this.list) c.phys = null;
     this.version++;
   }
@@ -460,32 +474,41 @@ export class PhysRegistry {
   /**
    * One frame at host time `t`: `data` holds records (RECORD_HEAD floats,
    * then PIECE_STRIDE per piece), `heaps` the heaps of collapses settled in
-   * it (heapRecord). A new `epoch` (a room reset) clears what was held.
+   * it (heapRecords). A new `epoch` (a room reset) clears what was held.
    */
   ingest(
     t: number,
     epoch: number,
     data: Float32Array,
     heaps: Float32Array | null,
+    /** Where the records end in `data` (a reused buffer), floats. */
+    end = data.length,
   ): void {
     if (epoch !== this.epoch) {
       this.clear();
       this.epoch = epoch;
     }
+    INGEST.t = t;
     let o = 0;
-    while (o + RECORD_HEAD <= data.length) {
+    let r = 0;
+    while (o + RECORD_HEAD <= end) {
       const id = data[o] as number;
       const building = data[o + 1] as number;
       const n = data[o + 2] as number;
       const flags = data[o + 3] as number;
       const at = o + RECORD_HEAD;
       o = at + n * PIECE_STRIDE;
-      if (o > data.length) break;
-      const key = keyOf(id, building);
-      let p = this.poses.get(key);
+      if (o > end) break;
+      // Frames list their collapses in the same order tick after tick:
+      // the last frame's r-th is checked first, by comparison — a map
+      // lookup boxes a key past the small-integer range (O5).
+      let p = this.order[r] ?? null;
+      if (p === null || p.id !== id || p.building !== building) {
+        p = this.poses.get(keyOf(id, building)) ?? null;
+      }
       if (!p) {
         p = new PhysPoses(id, building, n, this.history);
-        this.poses.set(key, p);
+        this.poses.set(keyOf(id, building), p);
         if (this.list) {
           for (let k = this.list.length - 1; k >= 0; k--) {
             const c = this.list[k] as PhysTarget;
@@ -496,8 +519,10 @@ export class PhysRegistry {
           }
         }
       }
-      p.push(t, data, at, (flags & REC_SETTLED) !== 0);
+      p.take(data, at, (flags & REC_SETTLED) !== 0);
+      this.order[r++] = p;
     }
+    this.order.length = r;
     if (heaps) {
       let h = 0;
       while (h + 7 <= heaps.length) {
@@ -530,20 +555,25 @@ export class PhysRegistry {
   }
 }
 
-/** A heap as its record: id, building, x0, z0, cell, nx, nz, heights. */
-export function heapRecord(
-  id: number,
-  building: number,
-  heap: RubbleHeap,
-): number[] {
-  return [
-    id,
-    building,
-    heap.x0,
-    heap.z0,
-    heap.cell,
-    heap.nx,
-    heap.nz,
-    ...heap.h,
-  ];
+/** Heaps as their records, one after another: id, building, x0, z0,
+ * cell, nx, nz, then the heights. */
+export function heapRecords(
+  list: readonly { id: number; building: number; heap: RubbleHeap }[],
+): Float32Array {
+  let size = 0;
+  for (const e of list) size += 7 + e.heap.h.length;
+  const out = new Float32Array(size);
+  let o = 0;
+  for (const { id, building, heap } of list) {
+    out[o] = id;
+    out[o + 1] = building;
+    out[o + 2] = heap.x0;
+    out[o + 3] = heap.z0;
+    out[o + 4] = heap.cell;
+    out[o + 5] = heap.nx;
+    out[o + 6] = heap.nz;
+    out.set(heap.h, o + 7);
+    o += 7 + heap.h.length;
+  }
+  return out;
 }

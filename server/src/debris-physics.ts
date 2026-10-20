@@ -70,7 +70,7 @@ import {
   RECORD_HEAD,
   REC_SETTLED,
   type RubbleHeap,
-  heapRecord,
+  heapRecords,
 } from "@angels-bandits/common/city/physpose";
 import {
   MATERIAL_DENSITY,
@@ -127,6 +127,9 @@ export const PHYS_STEP_BUDGET_MS = 4;
  * to freeze one early, m/s. */
 const GOVERN_WINDOW = 10;
 const GOVERN_SHRINK = 0.92;
+/** It shrinks once a step passes this share of the budget (headroom for
+ * the one-offs a tick can still bring: a big break-up, a settle). */
+const GOVERN_AIM = 0.85;
 const GOVERN_EASE = 0.6;
 const GOVERN_GROW = 4;
 const GOVERN_MIN = 24;
@@ -187,6 +190,8 @@ const HEAP_MAX_M = 6;
 /** The heap's grid at most this many cells a side (240 m at 1.5 m), and
  * how far a vertex is knocked up or down, m. */
 const HEAP_CELLS_MAX = 160;
+/** The grid the mound's shape is blurred on, m (a multiple of HEAP_CELL). */
+const HEAP_BLUR_CELL = 3;
 const HEAP_KNOCK_M = 0.9;
 
 const HELD = 0;
@@ -222,6 +227,8 @@ interface Group {
   joint: RAPIER.ImpulseJoint | null;
   anchor: RAPIER.RigidBody | null;
   snapAt: number;
+  /** Piece → index in `pieces` (slotOf), built on first use. */
+  slot: Int32Array | null;
   /** HELD: the floor that gave (crushed as it lets go). */
   gives: boolean;
   /** A strike this step asked it to break (`deep`: into its bays). */
@@ -282,6 +289,12 @@ interface StaticBuilding {
   version: number;
   body: RAPIER.RigidBody;
   colliders: number[];
+}
+
+/** A body's pose, read once. */
+interface BodyFrame {
+  t: { x: number; y: number; z: number };
+  q: { x: number; y: number; z: number; w: number };
 }
 
 let epochs = 0;
@@ -391,7 +404,7 @@ export class DebrisPhysics implements PhysicsHost {
       } else if (c > worst) worst = c;
     }
     const max = this.maxBudget;
-    if (worst > PHYS_STEP_BUDGET_MS && this.active > GOVERN_MIN) {
+    if (worst > PHYS_STEP_BUDGET_MS * GOVERN_AIM && this.active > GOVERN_MIN) {
       this.governedBudget = Math.max(
         GOVERN_MIN,
         Math.min(this.governedBudget, this.active) * GOVERN_SHRINK,
@@ -608,10 +621,11 @@ export class DebrisPhysics implements PhysicsHost {
     let cx = 0;
     let cy = 0;
     let cz = 0;
+    const ff = from ? this.frameOf(from) : null;
     for (let k = 0; k < pieces.length; k++) {
       const i = pieces[k] as number;
-      if (from) {
-        const p = this.pieceWorld(from, i);
+      if (from && ff) {
+        const p = this.pieceWorld(from, i, ff);
         wx[k] = p.x;
         wy[k] = p.y;
         wz[k] = p.z;
@@ -627,7 +641,7 @@ export class DebrisPhysics implements PhysicsHost {
     cx /= pieces.length;
     cy /= pieces.length;
     cz /= pieces.length;
-    if (from) rot = from.body.rotation();
+    if (ff) rot = ff.q;
     const desc = held
       ? RAPIER.RigidBodyDesc.fixed()
       : RAPIER.RigidBodyDesc.dynamic();
@@ -677,6 +691,7 @@ export class DebrisPhysics implements PhysicsHost {
       joint: null,
       anchor: null,
       snapAt: Number.POSITIVE_INFINITY,
+      slot: null,
       gives: false,
       crack: false,
       shock: 0,
@@ -852,16 +867,36 @@ export class DebrisPhysics implements PhysicsHost {
   }
 
   /** Where piece `i` of group `g` is now, world space. */
-  private pieceWorld(g: Group, i: number): { x: number; y: number; z: number } {
-    const k = g.pieces.indexOf(i);
-    const t = g.body.translation();
+  private pieceWorld(
+    g: Group,
+    i: number,
+    f: BodyFrame = this.frameOf(g),
+  ): { x: number; y: number; z: number } {
+    const k = this.slotOf(g, i);
     const p = rotateBy(
-      g.body.rotation(),
+      f.q,
       g.local[k * 3] as number,
       g.local[k * 3 + 1] as number,
       g.local[k * 3 + 2] as number,
     );
-    return { x: t.x + p.x, y: t.y + p.y, z: t.z + p.z };
+    return { x: f.t.x + p.x, y: f.t.y + p.y, z: f.t.z + p.z };
+  }
+
+  /** `g`'s body pose (read once for many pieces: each read crosses WASM). */
+  private frameOf(g: Group): BodyFrame {
+    return { t: g.body.translation(), q: g.body.rotation() };
+  }
+
+  /** Piece `i`'s index in `g.pieces` (a table, built once a group: a big
+   * section breaking up looks up every piece). */
+  private slotOf(g: Group, i: number): number {
+    let slot = g.slot;
+    if (!slot) {
+      slot = new Int32Array(g.pc.c.n).fill(-1);
+      for (let k = 0; k < g.pieces.length; k++) slot[g.pieces[k] as number] = k;
+      g.slot = slot;
+    }
+    return slot[i] as number;
   }
 
   /** A lean's hinge: a revolute joint on the line of the last standing
@@ -1627,11 +1662,17 @@ export class DebrisPhysics implements PhysicsHost {
     let z1 = Number.NEGATIVE_INFINITY;
     const pose = new Float64Array(c.n * 3);
     const span = new Float64Array(c.n);
+    const frames = new Map<Group, BodyFrame>();
     let total = extra;
     for (let i = 0; i < c.n; i++) {
       const g = pc.of[i];
       if (!g || g.state < 0) continue;
-      const p = this.pieceWorld(g, i);
+      let f = frames.get(g);
+      if (!f) {
+        f = this.frameOf(g);
+        frames.set(g, f);
+      }
+      const p = this.pieceWorld(g, i, f);
       const x = wrapDeltaAxis(c.x, p.x);
       const z = wrapDeltaAxis(c.z, p.z);
       pose[i * 3] = x;
@@ -1655,75 +1696,94 @@ export class DebrisPhysics implements PhysicsHost {
         (c.hz[i] as number);
     }
     if (!(x1 > x0) || !(z1 > z0)) return null;
-    const pad = 2 * HEAP_CELL;
+    // The mound's shape on a coarse grid (HEAP_BLUR_CELL): coverage, then
+    // three separable box blurs, radius 2 (edges included)…
+    const C = HEAP_BLUR_CELL;
+    const pad = 2 * C;
     x0 -= pad;
     z0 -= pad;
-    const nx = Math.min(HEAP_CELLS_MAX, Math.ceil((x1 + pad - x0) / HEAP_CELL));
-    const nz = Math.min(HEAP_CELLS_MAX, Math.ceil((z1 + pad - z0) / HEAP_CELL));
-    const row = nx + 1;
-    const w = new Float32Array(row * (nz + 1));
+    const cx = Math.min(HEAP_CELLS_MAX / 2, Math.ceil((x1 + pad - x0) / C));
+    const cz = Math.min(HEAP_CELLS_MAX / 2, Math.ceil((z1 + pad - z0) / C));
+    const crow = cx + 1;
+    const w = new Float32Array(crow * (cz + 1));
     for (let i = 0; i < c.n; i++) {
       if (!pc.of[i] || pc.merged[i]) continue;
       const x = pose[i * 3] as number;
       const z = pose[i * 3 + 2] as number;
       const r = span[i] as number;
       const weight = Math.max(0, pose[i * 3 + 1] as number) + 1;
-      const a0 = Math.max(0, Math.floor((x - r - x0) / HEAP_CELL));
-      const a1 = Math.min(nx, Math.ceil((x + r - x0) / HEAP_CELL));
-      const b0 = Math.max(0, Math.floor((z - r - z0) / HEAP_CELL));
-      const b1 = Math.min(nz, Math.ceil((z + r - z0) / HEAP_CELL));
+      const a0 = Math.max(0, Math.floor((x - r - x0) / C));
+      const a1 = Math.min(cx, Math.ceil((x + r - x0) / C));
+      const b0 = Math.max(0, Math.floor((z - r - z0) / C));
+      const b1 = Math.min(cz, Math.ceil((z + r - z0) / C));
       for (let j = b0; j <= b1; j++) {
         for (let k = a0; k <= a1; k++) {
-          w[j * row + k] = (w[j * row + k] as number) + weight;
+          w[j * crow + k] = (w[j * crow + k] as number) + weight;
         }
       }
     }
-    // Blur: three box passes, radius 2 — each separable (a 5-tap average
-    // along x, then along z: the same as the 5 × 5 one, edges included).
     const tmp = new Float32Array(w.length);
     for (let pass = 0; pass < 3; pass++) {
-      for (let j = 0; j <= nz; j++) {
-        for (let k = 0; k <= nx; k++) {
+      for (let j = 0; j <= cz; j++) {
+        for (let k = 0; k <= cx; k++) {
           let sum = 0;
           let n = 0;
-          for (let kk = Math.max(0, k - 2); kk <= Math.min(nx, k + 2); kk++) {
-            sum += w[j * row + kk] as number;
+          for (let kk = Math.max(0, k - 2); kk <= Math.min(cx, k + 2); kk++) {
+            sum += w[j * crow + kk] as number;
             n++;
           }
-          tmp[j * row + k] = sum / n;
+          tmp[j * crow + k] = sum / n;
         }
       }
-      for (let j = 0; j <= nz; j++) {
-        for (let k = 0; k <= nx; k++) {
+      for (let j = 0; j <= cz; j++) {
+        for (let k = 0; k <= cx; k++) {
           let sum = 0;
           let n = 0;
-          for (let jj = Math.max(0, j - 2); jj <= Math.min(nz, j + 2); jj++) {
-            sum += tmp[jj * row + k] as number;
+          for (let jj = Math.max(0, j - 2); jj <= Math.min(cz, j + 2); jj++) {
+            sum += tmp[jj * crow + k] as number;
             n++;
           }
-          w[j * row + k] = sum / n;
+          w[j * crow + k] = sum / n;
         }
       }
     }
     let sum = 0;
     for (let k = 0; k < w.length; k++) sum += w[k] as number;
     if (!(sum > 0)) return null;
-    const scale = total / (sum * HEAP_CELL * HEAP_CELL);
-    const h = new Float32Array(w.length);
+    const scale = total / (sum * C * C);
+    // …then sampled (bilinear) onto the fine HEAP_CELL surface, each vertex
+    // scaled and knocked up or down a little by its own hash: rubble, not a
+    // dune. Zero at its rim.
+    const r = C / HEAP_CELL;
+    const nx = cx * r;
+    const nz = cz * r;
+    const row = nx + 1;
+    const h = new Float32Array(row * (nz + 1));
     let top = 0;
-    for (let j = 0; j <= nz; j++) {
-      for (let k = 0; k <= nx; k++) {
-        const at = j * row + k;
-        if (j === 0 || k === 0 || j === nz || k === nx) continue;
-        // Rubble, not a dune: each vertex scaled and knocked up or down
-        // a little by its own hash (where there is rubble at all).
-        const base = (w[at] as number) * scale;
+    for (let j = 1; j < nz; j++) {
+      const v = j / r;
+      const j0 = Math.min(cz - 1, Math.floor(v));
+      const fv = v - j0;
+      for (let k = 1; k < nx; k++) {
+        const u = k / r;
+        const k0 = Math.min(cx - 1, Math.floor(u));
+        const fu = u - k0;
+        const a = w[j0 * crow + k0] as number;
+        const bb = w[j0 * crow + k0 + 1] as number;
+        const cc = w[(j0 + 1) * crow + k0] as number;
+        const d = w[(j0 + 1) * crow + k0 + 1] as number;
+        const base =
+          (a * (1 - fu) * (1 - fv) +
+            bb * fu * (1 - fv) +
+            cc * (1 - fu) * fv +
+            d * fu * fv) *
+          scale;
         const rough = 0.75 + 0.5 * hash3(c.id, k, j);
         const knock =
           base > 0.3 ? HEAP_KNOCK_M * (hash3(c.id + 7919, k, j) - 0.5) : 0;
-        const v = Math.min(HEAP_MAX_M, Math.max(0, base * rough + knock));
-        h[at] = v;
-        top = Math.max(top, v);
+        const hv = Math.min(HEAP_MAX_M, Math.max(0, base * rough + knock));
+        h[j * row + k] = hv;
+        top = Math.max(top, hv);
       }
     }
     return { x0, z0, cell: HEAP_CELL, nx, nz, h, top };
@@ -1732,27 +1792,33 @@ export class DebrisPhysics implements PhysicsHost {
   /** `heap` in the world: what the next collapse's debris piles onto. */
   private groundHeap(c: Collapse, heap: RubbleHeap): RAPIER.RigidBody {
     // Rapier's heightfield: rows along z, columns along x, column-major,
-    // centred on its collider.
-    const rows = heap.nz;
-    const cols = heap.nx;
+    // centred on its collider — at every second vertex (the next debris
+    // piles onto the mound, not onto its every knock: a quarter of the
+    // build at settle).
+    const step = heap.nx % 2 === 0 && heap.nz % 2 === 0 ? 2 : 1;
+    const rows = heap.nz / step;
+    const cols = heap.nx / step;
+    const cell = heap.cell * step;
     const h = new Float32Array((rows + 1) * (cols + 1));
     for (let i = 0; i <= cols; i++) {
       for (let j = 0; j <= rows; j++) {
-        h[i * (rows + 1) + j] = heap.h[j * (cols + 1) + i] as number;
+        h[i * (rows + 1) + j] = heap.h[
+          j * step * (heap.nx + 1) + i * step
+        ] as number;
       }
     }
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(
-        c.x + heap.x0 + (cols * heap.cell) / 2,
+        c.x + heap.x0 + (cols * cell) / 2,
         0,
-        c.z + heap.z0 + (rows * heap.cell) / 2,
+        c.z + heap.z0 + (rows * cell) / 2,
       ),
     );
     this.world.createCollider(
       RAPIER.ColliderDesc.heightfield(rows, cols, h, {
-        x: cols * heap.cell,
+        x: cols * cell,
         y: 1,
-        z: rows * heap.cell,
+        z: rows * cell,
       }).setFriction(this.room.tuning.physFriction),
       body,
     );
@@ -1807,13 +1873,14 @@ export class DebrisPhysics implements PhysicsHost {
     }
     let heaps: Float32Array | null = null;
     if (this.pendingHeaps.length > 0) {
-      const rows: number[] = [];
+      const list: { id: number; building: number; heap: RubbleHeap }[] = [];
       for (const k of this.pendingHeaps) {
         const pc = this.collapses[k];
-        if (pc?.heap) rows.push(...heapRecord(pc.c.id, pc.c.building, pc.heap));
+        if (pc?.heap)
+          list.push({ id: pc.c.id, building: pc.c.building, heap: pc.heap });
       }
       this.pendingHeaps = [];
-      if (rows.length > 0) heaps = Float32Array.from(rows);
+      if (list.length > 0) heaps = heapRecords(list);
     }
     const frame = { t: this.time, epoch: this.epoch, data, heaps };
     this.registry.ingest(frame.t, frame.epoch, data, heaps);

@@ -173,16 +173,21 @@ const physFeed = ((): ((ms: number) => void) | null => {
   const data = new Float32Array(size);
   const pose = collapseMod.blankPose();
   let last = Number.NaN;
+  const sent = new Set<number>();
   return (ms: number) => {
     const tick = Math.floor(ms / 50) * 50;
     if (tick === last) return;
     last = tick;
     let o = 0;
     for (const c of field.list) {
+      // Like the physics: a collapse's frames stop after its settled one.
+      const settled = tick >= c.t0 + c.endMs;
+      if (settled && sent.has(c.id)) continue;
+      if (settled) sent.add(c.id);
       data[o] = c.id;
       data[o + 1] = c.building;
       data[o + 2] = c.n;
-      data[o + 3] = 0;
+      data[o + 3] = settled ? physMod.REC_SETTLED : 0;
       o += H;
       collapseMod.setPoseClock(tick);
       for (let i = 0; i < c.n; i++) {
@@ -201,7 +206,7 @@ const physFeed = ((): ((ms: number) => void) | null => {
         o += S;
       }
     }
-    registry.ingest(tick, 1, data, null);
+    if (o > 0) registry.ingest(tick, 1, data, null, o);
   };
 })();
 

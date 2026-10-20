@@ -363,12 +363,6 @@ export function pieceIntact(
   tMs: number,
   hy: number,
 ): boolean {
-  // DS1: a physics piece is whole while its columns still hold it.
-  // (updateDebris has set the pose clock to tMs: no double handed on.)
-  if (c.phys !== null) {
-    const s = c.phys.stateNow(i);
-    return s === PIECE_HELD || s === PIECE_WHOLE;
-  }
   const age = (tMs - c.t0) / 1000 - (c.start[i] as number);
   if (age < 0) return true;
   if (c.style === PANCAKE) return hy >= 0.98 * (c.hy[i] as number);
@@ -704,11 +698,16 @@ export class CityRenderer {
       for (let i = 0; i < c.n; i++) {
         const pose = posePieceNow(c, i, this.bPose);
         debris.setMatrixAt(start + i, pieceMatrixAt(pose, this.scratch));
-        const state = pose.rest
-          ? AT_REST
-          : pieceIntact(c, i, t, pose.hy)
-            ? INTACT
-            : BROKEN;
+        // DS1: a physics piece is whole while held, or riding a whole
+        // section (the pose clock is set: no double handed on — and
+        // pieceIntact stays small enough to inline, O5).
+        const phys = c.phys;
+        const whole =
+          phys !== null
+            ? phys.stateNow(i) === PIECE_HELD ||
+              phys.stateNow(i) === PIECE_WHOLE
+            : pieceIntact(c, i, t, pose.hy);
+        const state = pose.rest ? AT_REST : whole ? INTACT : BROKEN;
         if (this.bRest[start + i] !== state) {
           this.bRest[start + i] = state;
           subOff.setW(

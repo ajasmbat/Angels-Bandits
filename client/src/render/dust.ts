@@ -62,6 +62,7 @@ import { destructLook } from "./destruct-look";
 import { QUALITY_PROFILES, type QualityTier } from "./quality";
 import { RENDER_ORDER } from "./render-order";
 import { DUSK, LIGHT_RIG } from "./sky";
+import { SURGE_ALONG_M, SURGE_SCALE_H_M, surgeAlong } from "./surge";
 import { pushUpdateRange } from "./update-range";
 
 /** Puffs per cloud at full quality (D11: 72 → 144, for the curtain and
@@ -138,19 +139,11 @@ const CURTAIN_HOT_MS = 2200;
  * rolls past where it meets it, m (most of a block each way); how high it
  * hugs the ground, m; and how fast it lifts once it has slowed, m/s. */
 const SURGE_TAU_S = 2.4;
-export const SURGE_ALONG_M = 0.8 * BLOCK_PITCH;
+export { SURGE_ALONG_M, surgeAlong };
 export const SURGE_TOP_M = 14;
-/** DS2: a big collapse's surge is a pyroclastic flow — it rolls further
- * down the avenues (× height / SURGE_SCALE_H_M, 1..SURGE_SCALE_MAX: a
- * supertall's runs blocks each way) in bigger puffs (√ of it, capped). */
-const SURGE_SCALE_H_M = 110;
-export const SURGE_SCALE_MAX = 2.6;
+/** DS2: a big collapse's surge puffs are bigger (√ of surge.ts's scale,
+ * capped). */
 const SURGE_PUFF_MAX = 1.2;
-/** How far the surge rolls along the street past where it meets it, m. */
-export const surgeAlong = (height: number): number =>
-  SURGE_ALONG_M *
-  destructLook.dustRollOut *
-  Math.min(SURGE_SCALE_MAX, Math.max(1, height / SURGE_SCALE_H_M));
 const SURGE_LIFT = 0.45;
 /** A squib: how far it jets, m, its e-folding time, s, and its life, ms. */
 const SQUIB_REACH_M = 22;

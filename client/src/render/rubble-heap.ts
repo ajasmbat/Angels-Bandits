@@ -64,8 +64,10 @@ const SLAB_SHARE = 0.3;
 const REBAR_SHARE = 0.04;
 const GLINT_SHARE = 0.05;
 const GLINT_SHARE_GLASS = 0.14;
-/** The glitter's colour (linear; under the bloom threshold). */
-const GLINT = "vec3(0.5, 0.55, 0.62)";
+/** The glitter's colour (linear; its peak channel under the bloom
+ * threshold, over the darkest of the heap's vertex colours). */
+export const HEAP_GLINT_RGB = [0.4, 0.44, 0.5] as const;
+const GLINT = `vec3(${HEAP_GLINT_RGB.join(", ")})`;
 
 /** A hash of three integers into [0, 1). */
 function hash01(a: number, b: number, c: number): number {

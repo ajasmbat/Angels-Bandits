@@ -19,7 +19,7 @@ import { COLLAPSE_DUST_MS } from "@angels-bandits/common/constants";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { destructLook } from "./destruct-look";
-import { surgeAlong } from "./dust";
+import { surgeAlong } from "./surge";
 
 /** Emitters at once (the newest collapses in range). */
 export const DEPOSITS = 6;

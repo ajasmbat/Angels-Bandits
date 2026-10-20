@@ -59,6 +59,7 @@ const COLUMN_HALF = 0.25;
 const ROOM_BURNING = 0.12;
 const ROOM_LIT = 0.34;
 const ROOM_LIGHT = "vec3(0.36, 0.26, 0.15)";
+// (INTERIOR_PEAK below is ROOM_LIGHT's red × PANEL_LIGHT.)
 const ROOM_FIRE_LOW = "vec3(0.6, 0.2, 0.03)";
 const ROOM_FIRE_HIGH = "vec3(0.32, 0.06, 0.01)";
 const SLAB_GLOW = "vec3(0.045, 0.032, 0.02)";
@@ -162,6 +163,9 @@ const CABLE_PITCH = 1.3;
  * room light: the panels' 0.36 × 1.6 = 0.58 stays under the bloom
  * threshold). */
 const PANEL_LIGHT = 1.6;
+/** The brightest a lit room's interior gets (linear, its panels' peak
+ * channel) — under the bloom threshold. */
+export const INTERIOR_PEAK = 0.36 * PANEL_LIGHT;
 const INTERIOR_GLSL = /* glsl */ `
 #ifndef AB_FRACTURE
     float imOn = step(0.5, uWinInterior) * brkRoomDetail * (1.0 - step(0.5, brkN.y)) * (1.0 - brkSlab);

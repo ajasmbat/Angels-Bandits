@@ -1,5 +1,6 @@
 // D10 on the client: the fracture shape debris is drawn with stays inside
-// the box it collides as (the CPU geometry, and the shader's inset in JS),
+// the box it collides as (DS2: the fracture library's cells, and the
+// shader's vertex in JS),
 // the debris program fits WebGL2's 16 vertex attributes, steel stays steel
 // when it lands, the dust surges down the streets and squibs out of the
 // facade on the floor events, the ground jolts on them, the roars are
@@ -61,12 +62,14 @@ import {
   creepSeconds,
 } from "../src/render/collapse-fx";
 import {
-  FRACTURE_HASH_MIN,
-  FRACTURE_MAX_SHARE,
   FRACTURE_VERTEX_GLSL,
+  FRACTURE_VERTEX_PARS_GLSL,
   REBAR_HALF,
+  REBAR_MAX_M,
+  REST_FILL,
+  STEEL_THIN,
   fractureGeometry,
-  fractureInset,
+  libraryVertex,
 } from "../src/render/debris";
 import {
   DustClouds,
@@ -78,6 +81,17 @@ import {
   dustPuff,
   puffKind,
 } from "../src/render/dust";
+import {
+  FRACTURE_VARIANTS,
+  FRACTURE_VERT_BUDGET,
+  FracClass,
+  INTACT_ROW,
+  LIB_VERTS,
+  ON_REBAR,
+  ROW_TEXELS,
+  bakeLibrary,
+  libraryTexels,
+} from "../src/render/fracture-library";
 import type { Impacts } from "../src/render/impacts";
 import { setupSky } from "../src/render/sky";
 
@@ -121,37 +135,42 @@ function felled(
 }
 
 describe("D10 fracture shape: drawn inside the box it collides as", () => {
+  // DS2: the shape is the fracture library's cell, read by gl_VertexID.
   const geo = fractureGeometry();
   const P = geo.getAttribute("position");
-  const UV = geo.getAttribute("uv");
+  const cells = bakeLibrary();
+  const texels = libraryTexels(cells);
+  const at = (row: number, r: number, v: number) =>
+    ((row * ROW_TEXELS + r) * LIB_VERTS + v) * 4;
 
-  it("every vertex of the geometry lies in the unit box; chips are positive, rebar only at edge midpoints", () => {
+  it("every library vertex lies in the unit box; rebar only in the concrete cells; a modest mesh", () => {
     let rebar = 0;
-    for (let i = 0; i < P.count; i++) {
-      const x = P.getX(i);
-      const y = P.getY(i);
-      const z = P.getZ(i);
-      expect(Math.abs(x)).toBeLessThanOrEqual(0.5 + 1e-9);
-      expect(Math.abs(z)).toBeLessThanOrEqual(0.5 + 1e-9);
-      expect(y).toBeGreaterThanOrEqual(-1e-9);
-      expect(y).toBeLessThanOrEqual(1 + 1e-9);
-      expect(UV.getX(i)).toBeGreaterThanOrEqual(0);
-      if (UV.getY(i) > 0.5) {
-        rebar++;
-        const onBoundary = [
-          Math.abs(x) > 0.4999,
-          y < 1e-4 || y > 0.9999,
-          Math.abs(z) > 0.4999,
-        ].filter(Boolean).length;
-        expect(onBoundary).toBe(2);
+    for (let row = 0; row < cells.length; row++) {
+      for (let v = 0; v < LIB_VERTS; v++) {
+        for (let a = 0; a < 3; a++) {
+          expect(
+            Math.abs(texels[at(row, 0, v) + a] as number),
+          ).toBeLessThanOrEqual(0.5 + 1e-9);
+        }
+        const isBar = (texels[at(row, 0, v) + 3] as number) === ON_REBAR;
+        const moved = (texels[at(row, 0, v)] as number) !== 0;
+        if (isBar && moved) {
+          rebar++;
+          expect(Math.floor(row / FRACTURE_VARIANTS)).toBe(FracClass.CONCRETE);
+        }
       }
     }
-    expect(rebar).toBe(12 * 4); // a ribbon (4 ends) per edge midpoint
-    // A modest mesh: the debris draws many of these.
-    expect(P.count).toBeLessThan(120);
+    expect(rebar).toBeGreaterThan(0);
+    // The intact box's own vertices are the geometry's (y in [0, 1]).
+    expect(P.count).toBe(LIB_VERTS);
+    expect(P.count).toBeLessThanOrEqual(FRACTURE_VERT_BUDGET);
+    for (let i = 0; i < P.count; i++) {
+      expect(P.getY(i)).toBeGreaterThanOrEqual(-1e-9);
+      expect(P.getY(i)).toBeLessThanOrEqual(1 + 1e-9);
+    }
   });
 
-  it("the shader's inset (in JS) keeps every vertex inside the box, for every piece size and hash", () => {
+  it("the shader's vertex (in JS) stays inside the box, for every piece size, cell, steel bend and rest", () => {
     const sizes: [number, number, number][] = [
       [20, 3.83, 20], // a storey slab
       [2, 12, 20], // a facade sheet
@@ -160,38 +179,46 @@ describe("D10 fracture shape: drawn inside the box it collides as", () => {
       [0.3, 0.3, 0.3],
     ];
     for (const size of sizes) {
-      for (const h of [0, 0.37, 1]) {
-        for (let i = 0; i < P.count; i++) {
-          const p: [number, number, number] = [P.getX(i), P.getY(i), P.getZ(i)];
-          const q = fractureInset(p, UV.getX(i), UV.getY(i), size, h);
-          expect(Math.abs(q[0])).toBeLessThanOrEqual(0.5 + 1e-9);
-          expect(Math.abs(q[2])).toBeLessThanOrEqual(0.5 + 1e-9);
-          expect(q[1]).toBeGreaterThanOrEqual(-1e-9);
-          expect(q[1]).toBeLessThanOrEqual(1 + 1e-9);
-          // Never further in than MAX_SHARE of the half extent, per axis
-          // (plus a rebar ribbon's half width along its edge).
-          for (let a = 0; a < 3; a++) {
-            const moved =
-              Math.abs((q[a] as number) - (p[a] as number)) * size[a];
-            expect(moved).toBeLessThanOrEqual(
-              FRACTURE_MAX_SHARE * 0.5 * size[a] + REBAR_HALF + 1e-9,
-            );
+      for (let axis = 0; axis < 3; axis++) {
+        for (let row = 0; row < cells.length; row++) {
+          const steel =
+            Math.floor(row / FRACTURE_VARIANTS) === FracClass.STEEL &&
+            row !== INTACT_ROW;
+          for (const bend of steel
+            ? [
+                { h2: 0, h3: 0 },
+                { h2: 1, h3: 1 },
+                { h2: 0.37, h3: 0.8 },
+              ]
+            : [null]) {
+            for (const rest of [false, true]) {
+              for (let v = 0; v < LIB_VERTS; v++) {
+                const q = libraryVertex(texels, row, v, size, axis, bend, rest);
+                const bar = (texels[at(row, 0, v) + 3] as number) === ON_REBAR;
+                // A rebar ribbon may stand its half width off its bar.
+                const tol = (k: number) =>
+                  (bar ? REBAR_HALF / size[k] : 0) + 1e-9;
+                expect(Math.abs(q[0])).toBeLessThanOrEqual(0.5 + tol(0));
+                expect(Math.abs(q[2])).toBeLessThanOrEqual(0.5 + tol(2));
+                expect(q[1]).toBeGreaterThanOrEqual(-tol(1));
+                expect(q[1]).toBeLessThanOrEqual(1 + tol(1));
+              }
+            }
           }
         }
       }
     }
   });
 
-  it("the GLSL carries the same constants as fractureInset", () => {
-    expect(FRACTURE_VERTEX_GLSL).toContain(
-      `${FRACTURE_MAX_SHARE.toFixed(2)} * 0.5 * frS`,
-    );
-    expect(FRACTURE_VERTEX_GLSL).toContain(
-      `${FRACTURE_HASH_MIN.toFixed(2)} + `,
-    );
-    expect(FRACTURE_VERTEX_GLSL).toContain(REBAR_HALF.toFixed(2));
+  it("the GLSL carries the same constants as libraryVertex", () => {
+    expect(FRACTURE_VERTEX_PARS_GLSL).toContain(REBAR_HALF.toFixed(2));
+    expect(FRACTURE_VERTEX_PARS_GLSL).toContain(REBAR_MAX_M.toFixed(2));
+    expect(FRACTURE_VERTEX_PARS_GLSL).toContain(REST_FILL.toFixed(2));
+    expect(FRACTURE_VERTEX_PARS_GLSL).toContain(STEEL_THIN.toFixed(3));
+    expect(FRACTURE_VERTEX_PARS_GLSL).toContain("gl_VertexID");
     // Keyed on the piece's static offset, never on the slot.
-    expect(FRACTURE_VERTEX_GLSL).toContain("aSubOff.xyz");
+    expect(FRACTURE_VERTEX_PARS_GLSL).toContain("aSubOff.xyz");
+    expect(FRACTURE_VERTEX_PARS_GLSL).not.toContain("gl_InstanceID");
     expect(FRACTURE_VERTEX_GLSL).not.toContain("gl_InstanceID");
   });
 
@@ -216,8 +243,9 @@ describe("D10 fracture shape: drawn inside the box it collides as", () => {
     expect(custom(city.vs)).toEqual(custom(debris.vs));
     expect(custom(city.vs)).toHaveLength(8);
     // + position, normal, instanceMatrix (4 locations), instanceColor = 15;
-    // the debris variant alone also reads `uv` — 16, WebGL2's floor.
-    expect(8 + 2 + 4 + 1 + 1).toBeLessThanOrEqual(16);
+    // DS2: the debris variant reads its shape from the library texture (no
+    // `uv` any more) — still within WebGL2's 16.
+    expect(8 + 2 + 4 + 1).toBeLessThanOrEqual(16);
     // The variant adds its define to three's own; the city keeps three's.
     expect(debris.m.defines).toEqual({ STANDARD: "", AB_FRACTURE: "" });
     expect(city.m.defines).toEqual({ STANDARD: "" });
@@ -274,7 +302,7 @@ describe("D10 the debris mesh in the city renderer", () => {
     }
     expect(columns).toBeGreaterThan(0);
     // The debris mesh is drawn with the fracture geometry and material.
-    expect(mesh.geometry.getAttribute("uv")).toBeDefined();
+    expect(mesh.geometry.getAttribute("position").count).toBe(LIB_VERTS);
     expect(
       (mesh.material as THREE.Material & { defines?: object }).defines,
     ).toEqual({ STANDARD: "", AB_FRACTURE: "" });

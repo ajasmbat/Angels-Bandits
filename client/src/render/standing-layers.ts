@@ -86,6 +86,10 @@ export const STANDING_EXEMPT: Readonly<Record<string, string>> = {
   scaffold:
     "sizes its cage and crane to standingProfile itself (director-client.test.ts)",
   "standing-layers": "this registry",
+  "glass-rain":
+    "DS2: reads a felled building's footprint and height to rain its glass; shards exist only while its collapse does, posed from the collapse and the clock",
+  "dust-deposit":
+    "DS2: reads a felled building's footprint and height to lay its settled dust round the lot; exists only while its collapse does",
   "collapse-fx":
     "D11: reads a felled building's height for its particle scale and facade archetype for its glass; draws only particles in flight off falling debris",
   city: "draws every damaged building 1:1 from its live solids() (D2) — the source of truth",

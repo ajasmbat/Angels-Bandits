@@ -111,14 +111,13 @@ const BRICK_M = 0.215;
  * per-square hashes read as checkerboards on every ruin. */
 export const BROKEN_PARS_GLSL = /* glsl */ `
 float abVNoise(vec2 p, float s) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float a = abHash(i, s);
-  float b = abHash(i + vec2(1.0, 0.0), s);
-  float c = abHash(i + vec2(0.0, 1.0), s);
-  float d = abHash(i + vec2(1.0, 1.0), s);
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  vec2 bvI = floor(p);
+  vec2 bvF = fract(p);
+  bvF = bvF * bvF * (3.0 - 2.0 * bvF);
+  return mix(
+    mix(abHash(bvI, s), abHash(bvI + vec2(1.0, 0.0), s), bvF.x),
+    mix(abHash(bvI + vec2(0.0, 1.0), s), abHash(bvI + vec2(1.0, 1.0), s), bvF.x),
+    bvF.y);
 }
 `;
 
@@ -270,10 +269,9 @@ if (brkDmg > 0.5) {
   float brkNoise = mix(0.5, abVNoise(brkW * 1.7, vBSeed * 31.0), abDetail(0.6, brkAA));
   if (brkDmg > 3.5) {
     // DS2 fracture face: the material's fresh break, by library class.
-#ifdef AB_FRACTURE
-    float frCls = vFrClass;
-#else
     float frCls = 0.0;
+#ifdef AB_FRACTURE
+    frCls = vFrClass;
 #endif
     brkFresh = 1.0;
     if (frCls > 1.5) {

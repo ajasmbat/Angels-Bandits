@@ -27,6 +27,7 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { cellIndex } from "@angels-bandits/common/city/destruction";
+import { PIECE_MOVING } from "@angels-bandits/common/city/physpose";
 import {
   BLOCK_PITCH,
   BULLET_RANGE,
@@ -84,6 +85,11 @@ export class DestructLab {
   private nTicks = 0;
   private head = 0;
   private lastTick = 0;
+  /** DS1: the physics step's costs, ms (a ring like `ticks`). */
+  private readonly phys = new Float64Array(LAB_STATS_WINDOW);
+  private nPhys = 0;
+  private physHead = 0;
+  private lastPhys = 0;
   private builds: number[] = [];
   private lastSent = Number.NEGATIVE_INFINITY;
 
@@ -250,6 +256,14 @@ export class DestructLab {
     if (this.builds.length > 32) this.builds.shift();
   }
 
+  /** DS1: note one physics step's cost, ms. */
+  notePhysics(ms: number): void {
+    this.lastPhys = ms;
+    this.phys[this.physHead] = ms;
+    this.physHead = (this.physHead + 1) % LAB_STATS_WINDOW;
+    this.nPhys = Math.min(LAB_STATS_WINDOW, this.nPhys + 1);
+  }
+
   /** The telemetry message, at most every LAB_STATS_MS (null between). */
   stats(
     city: RoomCity,
@@ -260,6 +274,10 @@ export class DestructLab {
     build: number;
     live: number;
     boxes: number;
+    bodies?: number;
+    budget?: number;
+    physLast?: number;
+    physP99?: number;
   } | null {
     if (now - this.lastSent < LAB_STATS_MS) return null;
     this.lastSent = now;
@@ -271,15 +289,34 @@ export class DestructLab {
     let boxes = 0;
     for (const c of city.collapses.list) {
       boxes += c.n;
-      if (now < c.t0 + c.endMs) live += c.n;
+      if (c.phys) {
+        // DS1: the pieces its bodies are moving now.
+        if (c.phys.settled) continue;
+        for (let i = 0; i < c.n; i++) {
+          if (c.phys.state(i, now) === PIECE_MOVING) live++;
+        }
+      } else if (now < c.t0 + c.endMs) live += c.n;
     }
     const round = (v: number) => Math.round(v * 1000) / 1000;
-    return {
+    const out = {
       last: round(this.lastTick),
       p99: round(p99),
       build: round(Math.max(0, ...this.builds)),
       live,
       boxes,
+    };
+    const physics = city.physics;
+    if (!physics) return out;
+    const np = this.nPhys;
+    const ps = Array.from(this.phys.subarray(0, np)).sort((a, b) => a - b);
+    return {
+      ...out,
+      bodies: physics.active,
+      budget: physics.budget,
+      physLast: round(this.lastPhys),
+      physP99: round(
+        np > 0 ? (ps[Math.min(np - 1, Math.floor(np * 0.99))] ?? 0) : 0,
+      ),
     };
   }
 }

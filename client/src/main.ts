@@ -7147,9 +7147,6 @@ const frame = (rafNow: number): void => {
   city.update(chase.position);
   // D3: debris posed at the render clock — the one the crash check uses.
   city.updateDebris(chase.position, collapseMs);
-  // DS1: the local host's debris physics LODs and budgets by this camera
-  // and tier (throttled to a few messages a second).
-  localPhysicsView(chase.position.x, chase.position.z, qualityTier, now);
   // L3 living windows: slow on/off, TV glow, silhouettes and the cleaning
   // crew all run off this one shared-clock uniform (living-windows.ts).
   city.updateLiveWindows(renderMs, now);
@@ -7527,6 +7524,10 @@ const frame = (rafNow: number): void => {
   dust.update(socket.collapses.list, collapseViewer, collapseMs, camera.aspect);
   ruinSmoke.update(socket.collapses.list, collapseViewer, collapseMs, now);
   rubbleHeaps.update(socket.collapses.list, collapseViewer);
+  // DS1: the local host's debris physics LODs and budgets by this camera
+  // (the lab's eye in the lab) and tier — throttled to a few messages a
+  // second.
+  localPhysicsView(collapseViewer.x, collapseViewer.z, qualityTier, now);
   collapseDetail.update(socket.collapses.list, collapseViewer, collapseMs, now);
   // D5: the director's warnings (dust, steam, sparks) and the rebuilds'
   // welders; an event is forgotten once its alarm has died away.

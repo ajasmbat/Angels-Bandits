@@ -1038,6 +1038,7 @@ export class DebrisPhysics implements PhysicsHost {
   step(now: number): void {
     if (this.collapses.length === 0) {
       this.time = now;
+      this.lastStepMs = 0;
       return;
     }
     const began = performance.now();

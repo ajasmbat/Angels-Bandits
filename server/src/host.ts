@@ -3076,7 +3076,10 @@ export function createGameHost(
           breakable(room) ? chaosPlanes(room, time) : [],
         );
         if (lab) {
-          const ms = performance.now() - destructionAt;
+          // DS1: the physics step has its own budget and cell.
+          const phys = rc.physics?.lastStepMs ?? 0;
+          if (rc.physics) lab.notePhysics(phys);
+          const ms = performance.now() - destructionAt - phys;
           lab.noteTick(ms, collapses.length > 0 ? ms : 0);
         }
         // P1: what swept through the city this tick, before the batch that

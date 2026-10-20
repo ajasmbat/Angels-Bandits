@@ -224,6 +224,8 @@ interface Group {
   joint: RAPIER.ImpulseJoint | null;
   anchor: RAPIER.RigidBody | null;
   snapAt: number;
+  /** HELD: the floor that gave (crushed as it lets go). */
+  gives: boolean;
   /** A strike this step asked it to break (`deep`: into its bays). */
   crack: boolean;
   /** The speed it has lost to strikes lately, m/s (decaying), and whether
@@ -518,8 +520,11 @@ export class DebrisPhysics implements PhysicsHost {
         // The floor that gave: right under the block (or the top floor).
         const failed = first && (block.length === 0 || top >= fail - 0.6);
         first = false;
-        const g = this.makeGroup(pc, list, LEVEL_BAND, !failed, null);
+        const g = this.makeGroup(pc, list, LEVEL_BAND, true, null);
         g.releaseAt = failed ? go : startOf(list) + HOLD_SLACK_S * 1000 + 400;
+        // The floor that gave: its columns are what failed — it lets go
+        // with the block, crushed.
+        g.gives = failed;
         g.capacity =
           HOLD_FACTOR * this.room.tuning.gravity * Math.max(above, g.mass);
         above += g.mass;
@@ -664,6 +669,7 @@ export class DebrisPhysics implements PhysicsHost {
       joint: null,
       anchor: null,
       snapAt: Number.POSITIVE_INFINITY,
+      gives: false,
       crack: false,
       shock: 0,
       through: false,
@@ -1188,7 +1194,9 @@ export class DebrisPhysics implements PhysicsHost {
       for (const g of [...pc.groups]) {
         if (g.state === HELD && this.time >= g.releaseAt) {
           if (this.active + 1 <= this.budget) {
-            this.release(g);
+            const gives = g.gives;
+            const parts = this.release(g);
+            if (gives) for (const part of parts) this.crush(part);
           } else if (this.time >= g.releaseAt + 5000) {
             // Never room for it: it stays where it stood, as rubble.
             g.state = FROZEN;
@@ -1515,6 +1523,10 @@ export class DebrisPhysics implements PhysicsHost {
     for (const pc of this.collapses) {
       if (pc.settled) continue;
       let live = 0;
+      // Nothing freezes while a floor is still held: what lies still now
+      // may yet be struck from above.
+      let holding = false;
+      for (const g of pc.groups) if (g.state === HELD) holding = true;
       for (const g of [...pc.groups]) {
         if (g.state === HELD) {
           live++;
@@ -1551,7 +1563,7 @@ export class DebrisPhysics implements PhysicsHost {
         const slow =
           v.x * v.x + v.y * v.y + v.z * v.z < FREEZE_V * FREEZE_V &&
           w.x * w.x + w.y * w.y + w.z * w.z < FREEZE_W * FREEZE_W;
-        g.still = slow ? g.still + dt : 0;
+        g.still = slow && !holding ? g.still + dt : 0;
         if (
           g.still >= FREEZE_S ||
           this.time - g.freeSince > FREEZE_MAX_S * 1000

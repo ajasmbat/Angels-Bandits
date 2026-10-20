@@ -84,6 +84,9 @@ export const FRONT_RATE = 36;
 export const RATE_MAX = LOOK_DEFAULTS.particleBudget;
 /** D11: a masonry / office tower's share of a curtain wall's glass. */
 const GLASS_MASONRY = 0.4;
+/** DS2: brick and masonry crumble — a masonry tower sheds this many times
+ * the gravel of a concrete or glass one. */
+export const MASONRY_CRUMBLE = 1.6;
 /** D11: a crush-front burst's chance of an electrical flash and of fire. */
 const FLASH_CHANCE = LOOK_DEFAULTS.flashChance;
 const FIRE_CHANCE = LOOK_DEFAULTS.fireChance;
@@ -266,6 +269,7 @@ export class CollapseDetail {
   private readonly at: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly dir: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly glassy = new Map<number, boolean>();
+  private readonly crumbly = new Map<number, number>();
   /** D11: the building's scale (k), cached. */
   private readonly kOf = new Map<number, number>();
   /** D11: crush-front bursts owed per collapse (FRONT_RATE throttle). */
@@ -536,6 +540,20 @@ export class CollapseDetail {
     return this.glass(b) ? 1 : GLASS_MASONRY;
   }
 
+  /** DS2: × the gravel building `b` sheds (masonry crumbles). Cached. */
+  private crumble(b: number): number {
+    let k = this.crumbly.get(b);
+    if (k === undefined) {
+      const bld = this.buildings[b];
+      k =
+        !!bld && archetypeFor(bld) === FacadeArchetype.MASONRY
+          ? MASONRY_CRUMBLE
+          : 1;
+      this.crumbly.set(b, k);
+    }
+    return k;
+  }
+
   /** Is building `b` a curtain-wall tower (glass showers)? Cached. */
   private glass(b: number): boolean {
     let g = this.glassy.get(b);
@@ -572,7 +590,7 @@ export class CollapseDetail {
   /** The trail: this frame's share of TRAIL_RATE, each off the next
    * falling piece round the collapse. */
   private trail(c: Collapse, renderMs: number, dt: number, now: number): void {
-    const rate = destructLook.trailRate;
+    const rate = destructLook.trailRate * this.crumble(c.building);
     let owed = (this.owed.get(c.id) ?? 0) + rate * this.share * dt;
     let k = this.cursor.get(c.id) ?? 0;
     // At most a full lap of pieces per frame looking for falling ones.
@@ -709,7 +727,7 @@ export class CollapseDetail {
         UP,
         landed ? 14 : 9,
         1.4,
-        Math.round(look.gravelBurst * k),
+        Math.round(look.gravelBurst * k * this.crumble(c.building)),
         1800,
         0.6,
         this.chips(c.building),

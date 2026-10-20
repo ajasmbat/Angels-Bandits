@@ -308,6 +308,7 @@ export class HeapDressing {
     this.mesh = new THREE.InstancedMesh(geometry, material, DRESS_MAX);
     this.mesh.frustumCulled = false;
     this.mesh.count = 0;
+    this.mesh.visible = false;
     this.mesh.name = "heap-dressing";
   }
 
@@ -368,6 +369,7 @@ export class HeapDressing {
       }
     }
     this.mesh.count = n;
+    this.mesh.visible = n > 0;
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }

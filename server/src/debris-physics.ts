@@ -67,6 +67,7 @@ import {
   PIECE_HELD,
   PIECE_MOVING,
   PIECE_STRIDE,
+  PIECE_WHOLE,
   PhysRegistry,
   RECORD_HEAD,
   REC_SETTLED,
@@ -1827,9 +1828,12 @@ export class DebrisPhysics implements PhysicsHost {
     const c = g.pc.c;
     const t = g.body.translation();
     const q = g.body.rotation();
+    // A section or a floor not yet broken up rides whole.
     const state =
       g.state === FREE
-        ? PIECE_MOVING
+        ? g.level <= LEVEL_BAND
+          ? PIECE_WHOLE
+          : PIECE_MOVING
         : g.state === HELD
           ? PIECE_HELD
           : PIECE_FROZEN;
@@ -1849,8 +1853,10 @@ export class DebrisPhysics implements PhysicsHost {
       data[at + 4] = q.y;
       data[at + 5] = q.z;
       data[at + 6] = q.w;
-      data[at + 7] = state;
-      data[at + 8] = g.pc.squash[i] as number;
+      const squash = g.pc.squash[i] as number;
+      // A crushed piece is broken, whatever it rides.
+      data[at + 7] = state === PIECE_WHOLE && squash < 1 ? PIECE_MOVING : state;
+      data[at + 8] = squash;
     }
   }
 }

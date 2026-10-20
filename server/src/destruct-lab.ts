@@ -27,7 +27,7 @@ import {
   demolitionPlan,
 } from "@angels-bandits/common/city/collapse";
 import { cellIndex } from "@angels-bandits/common/city/destruction";
-import { PIECE_MOVING } from "@angels-bandits/common/city/physpose";
+import { pieceMoving } from "@angels-bandits/common/city/physpose";
 import {
   BLOCK_PITCH,
   BULLET_RANGE,
@@ -296,7 +296,7 @@ export class DestructLab {
         // DS1: the pieces its bodies are moving now.
         if (c.phys.settled) continue;
         for (let i = 0; i < c.n; i++) {
-          if (c.phys.state(i, now) === PIECE_MOVING) live++;
+          if (pieceMoving(c.phys.state(i, now))) live++;
         }
       } else if (now < c.t0 + c.endMs) live += c.n;
     }

@@ -24,9 +24,9 @@ import {
 import { cellIndex } from "@angels-bandits/common/city/destruction";
 import {
   PIECE_FROZEN,
-  PIECE_MOVING,
   PhysRegistry,
   heapHeight,
+  pieceMoving,
 } from "@angels-bandits/common/city/physpose";
 import { FACE_POS_X } from "@angels-bandits/common/city/structure";
 import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
@@ -293,7 +293,7 @@ describe("DS1 draw == collide with the physics", () => {
       expect(p.x).toBe(q.x);
       expect(p.y).toBe(q.y);
       expect(p.qw).toBe(q.qw);
-      if (drawn.phys.state(i, t) !== PIECE_MOVING) continue;
+      if (!pieceMoving(drawn.phys.state(i, t))) continue;
       moving++;
       // A sphere where the piece is drawn hits it — falling debris…
       const at = { x: drawn.x + p.x, y: p.y, z: drawn.z + p.z };

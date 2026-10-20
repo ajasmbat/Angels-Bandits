@@ -48,7 +48,7 @@ import {
   posePieceNow,
   setPoseClock,
 } from "@angels-bandits/common/city/collapse";
-import { PIECE_HELD } from "@angels-bandits/common/city/physpose";
+import { PIECE_HELD, PIECE_WHOLE } from "@angels-bandits/common/city/physpose";
 import {
   type CityIndex,
   buildCityIndex,
@@ -365,7 +365,10 @@ export function pieceIntact(
 ): boolean {
   // DS1: a physics piece is whole while its columns still hold it.
   // (updateDebris has set the pose clock to tMs: no double handed on.)
-  if (c.phys !== null) return c.phys.stateNow(i) === PIECE_HELD;
+  if (c.phys !== null) {
+    const s = c.phys.stateNow(i);
+    return s === PIECE_HELD || s === PIECE_WHOLE;
+  }
   const age = (tMs - c.t0) / 1000 - (c.start[i] as number);
   if (age < 0) return true;
   if (c.style === PANCAKE) return hy >= 0.98 * (c.hy[i] as number);

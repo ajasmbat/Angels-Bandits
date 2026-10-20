@@ -174,23 +174,34 @@ try {
     }, s);
     await sleep(3000);
     await page.evaluate((k) => window.__ab.destructLab().fire(k), s.k);
-    await until(page, () => window.__ab.destructLab().debug().focus !== null);
-    const focus = await page.evaluate(
-      () => window.__ab.destructLab().debug().focus,
-    );
+    // The subject: the target tower's own collapse (the biggest of its, not
+    // a neighbour's it set off — that one may be over the body budget and
+    // stay closed-form, by design).
+    await page.evaluate((tower) => {
+      window.__dsSubject = () => {
+        const list = window.__ab.destructLab().deps.field.list;
+        let best = null;
+        for (const c of list) {
+          if (c.kind === 0 && c.building === tower && (!best || c.n > best.n))
+            best = c;
+        }
+        return best;
+      };
+    }, s.tower);
+    await until(page, () => window.__dsSubject() !== null);
+    const focus = await page.evaluate(() => ({ t0: window.__dsSubject().t0 }));
     // Played out live: until its physics settles (or 60 s).
     await until(
       page,
       (t0) => {
-        const l = window.__ab.destructLab();
-        const c = l.focusCollapse();
+        const c = window.__dsSubject();
         const now = window.__ab.renderMs() ?? 0;
         return (c?.phys?.settled ?? false) || now > t0 + 60_000;
       },
       focus.t0,
     );
     const info = await page.evaluate(() => {
-      const c = window.__ab.destructLab().focusCollapse();
+      const c = window.__dsSubject();
       return {
         id: c.id,
         building: c.building,

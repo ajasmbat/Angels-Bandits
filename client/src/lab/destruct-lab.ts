@@ -24,7 +24,7 @@ import {
   raycastChunk,
   tierGrids,
 } from "@angels-bandits/common/city/destruction";
-import { PIECE_MOVING } from "@angels-bandits/common/city/physpose";
+import { pieceMoving } from "@angels-bandits/common/city/physpose";
 import { BLOCK_PITCH } from "@angels-bandits/common/constants";
 import {
   type LabTrigger,
@@ -495,7 +495,7 @@ export class DestructLab {
       // DS1: a physics collapse's moving pieces are its frames' to say.
       if (c.phys) {
         for (let i = 0; i < c.n; i++) {
-          if (c.phys.state(i, view) === PIECE_MOVING) live++;
+          if (pieceMoving(c.phys.state(i, view))) live++;
         }
         continue;
       }

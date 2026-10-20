@@ -40,6 +40,13 @@ export const REC_SETTLED = 1;
 export const PIECE_HELD = 0;
 export const PIECE_MOVING = 1;
 export const PIECE_FROZEN = 2;
+/** Moving, but still part of a whole section or floor (not yet broken up
+ * or crushed): drawn whole, the closed form's CUT_INTACT. */
+export const PIECE_WHOLE = 3;
+
+/** Is a piece in `state` moving (broken off, or riding a whole section)? */
+export const pieceMoving = (state: number): boolean =>
+  state === PIECE_MOVING || state === PIECE_WHOLE;
 
 /** The clock the hot pose reads run at (collapse.ts's poseClock is this
  * object): a double handed to a call V8 declines to inline is boxed — one

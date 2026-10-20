@@ -39,9 +39,12 @@ export function pieceMatrix(
   originZ: number,
   out: THREE.Matrix4,
 ): THREE.Matrix4 {
-  // DS1: a physics pose carries its own rotation.
-  if (pose.quat) quat.set(pose.qx, pose.qy, pose.qz, pose.qw);
-  else quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
+  if (pose.quat) {
+    matOrigin.x = originX;
+    matOrigin.z = originZ;
+    return quatMatrix(pose, matOrigin, out);
+  }
+  quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
   pos.set(originX + pose.x, pose.y, originZ + pose.z);
   scale.set(2 * pose.hx, 2 * pose.hy, 2 * pose.hz);
   return out.compose(pos, quat, scale).multiply(CENTRE);
@@ -52,17 +55,71 @@ export function pieceMatrix(
  * call V8 does not inline is boxed, and there are ~4× D3's pieces). */
 export const pieceOrigin = { x: 0, z: 0 };
 
+/** pieceMatrix's own origin for a physics pose (pieceOrigin is the
+ * per-collapse loops'). */
+const matOrigin = { x: 0, z: 0 };
+
 /** pieceMatrix at `pieceOrigin`. Allocation-free. */
 export function pieceMatrixAt(
   pose: PiecePose,
   out: THREE.Matrix4,
 ): THREE.Matrix4 {
-  // DS1: a physics pose carries its own rotation.
-  if (pose.quat) quat.set(pose.qx, pose.qy, pose.qz, pose.qw);
-  else quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
+  if (pose.quat) return quatMatrix(pose, pieceOrigin, out);
+  quat.setFromAxisAngle(pose.axis === 0 ? AXIS_X : AXIS_Z, pose.phi);
   pos.set(pieceOrigin.x + pose.x, pose.y, pieceOrigin.z + pose.z);
   scale.set(2 * pose.hx, 2 * pose.hy, 2 * pose.hz);
   return out.compose(pos, quat, scale).multiply(CENTRE);
+}
+
+/**
+ * DS1: a physics pose's matrix at `pieceOrigin` — three's compose(position,
+ * quaternion, scale) × CENTRE written straight into `out.elements`: handing
+ * a quaternion's four doubles to three's setters (calls V8 does not inline)
+ * boxed each of them, per piece per frame (O5's rule). Allocation-free.
+ */
+function quatMatrix(
+  pose: PiecePose,
+  origin: { x: number; z: number },
+  out: THREE.Matrix4,
+): THREE.Matrix4 {
+  const te = out.elements;
+  const x = pose.qx;
+  const y = pose.qy;
+  const z = pose.qz;
+  const w = pose.qw;
+  const x2 = x + x;
+  const y2 = y + y;
+  const z2 = z + z;
+  const xx = x * x2;
+  const xy = x * y2;
+  const xz = x * z2;
+  const yy = y * y2;
+  const yz = y * z2;
+  const zz = z * z2;
+  const wx = w * x2;
+  const wy = w * y2;
+  const wz = w * z2;
+  const sx = 2 * pose.hx;
+  const sy = 2 * pose.hy;
+  const sz = 2 * pose.hz;
+  te[0] = (1 - (yy + zz)) * sx;
+  te[1] = (xy + wz) * sx;
+  te[2] = (xz - wy) * sx;
+  te[3] = 0;
+  te[4] = (xy - wz) * sy;
+  te[5] = (1 - (xx + zz)) * sy;
+  te[6] = (yz + wx) * sy;
+  te[7] = 0;
+  te[8] = (xz + wy) * sz;
+  te[9] = (yz - wx) * sz;
+  te[10] = (1 - (xx + yy)) * sz;
+  te[11] = 0;
+  // × CENTRE: the unit box stands on its base, the pose is its centre.
+  te[12] = origin.x + pose.x - 0.5 * (te[4] as number);
+  te[13] = pose.y - 0.5 * (te[5] as number);
+  te[14] = origin.z + pose.z - 0.5 * (te[6] as number);
+  te[15] = 1;
+  return out;
 }
 
 // --- D10 fracture geometry ----------------------------------------------------

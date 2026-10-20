@@ -45,7 +45,6 @@ import {
   MODE_HINGE,
   PANCAKE,
   blankPose,
-  collapseSettledAt,
   posePieceNow,
   setPoseClock,
 } from "@angels-bandits/common/city/collapse";
@@ -364,7 +363,8 @@ export function pieceIntact(
   hy: number,
 ): boolean {
   // DS1: a physics piece is whole while its columns still hold it.
-  if (c.phys !== null) return c.phys.state(i, tMs) === PIECE_HELD;
+  // (updateDebris has set the pose clock to tMs: no double handed on.)
+  if (c.phys !== null) return c.phys.stateNow(i) === PIECE_HELD;
   const age = (tMs - c.t0) / 1000 - (c.start[i] as number);
   if (age < 0) return true;
   if (c.style === PANCAKE) return hy >= 0.98 * (c.hy[i] as number);
@@ -672,7 +672,9 @@ export class CityRenderer {
       const kx = imageIndex(cameraPos.x, c.x);
       const kz = imageIndex(cameraPos.z, c.z);
       // DS1: a physics collapse lies still once its final frame came.
-      const settled = t >= collapseSettledAt(c);
+      // (Fields, not collapseSettledAt: a returned double boxes, O5.)
+      const settled =
+        c.phys !== null ? t >= c.phys.settledAt : t >= c.t0 + c.endMs;
       if (
         settled &&
         this.drawnSettled[k] &&

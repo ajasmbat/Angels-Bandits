@@ -32,8 +32,11 @@
 //     all; a collapse that would start past it, or far from the camera
 //     (PHYS_LOD_M), stays analytic.
 //
-// Every host tick the world steps to the host clock in fixed 1/60 s steps
-// and writes one frame (city/physpose.ts): the room's own registry ingests
+// Every host tick the world steps to the host clock in fixed 1/20 s steps —
+// one a tick (tools/physics-bench.ts: a Rapier step over 400 moving slabs
+// is ~3 ms, so finer steps would put the tick over its budget; pieces are
+// metres thick and the falls short, so a 50 ms step tunnels nothing that
+// shows) — and writes one frame (city/physpose.ts): the room's own registry ingests
 // it (the bots collide with exactly that) and the worker transfers the same
 // Float32Array to the page. When a collapse has settled its final frame
 // carries REC_SETTLED, and its rubble heap follows.
@@ -113,10 +116,26 @@ export type PhysTier = keyof typeof PHYS_BUDGET;
 /** A collapse further than this from the camera stays analytic, m (it is
  * in the fog, and its rubble is the closed form's). */
 export const PHYS_LOD_M = 650;
-/** The fixed step, s, and the most steps one tick may take (behind by
- * more, the world skips ahead: debris slows, the tick never spirals). */
-export const PHYS_STEP_S = 1 / 60;
+/** The fixed step, s — one per 20 Hz host tick — and the most steps one
+ * tick may take (behind by more, the world skips ahead: debris slows, the
+ * tick never spirals). */
+export const PHYS_STEP_S = 1 / 20;
 const MAX_STEPS = 8;
+/** The worker's step budget, ms, p99 — what the governor holds it to. */
+export const PHYS_STEP_BUDGET_MS = 4;
+/** The governor: the window it judges, ticks; the share the budget shrinks
+ * to over it; the share of the step budget under which it grows again, and
+ * by how many bodies a tick; its floor; and how slow a body must be for it
+ * to freeze one early, m/s. */
+const GOVERN_WINDOW = 10;
+const GOVERN_SHRINK = 0.92;
+const GOVERN_EASE = 0.6;
+const GOVERN_GROW = 4;
+const GOVERN_MIN = 24;
+const GOVERN_STILL_V = 1.5;
+/** New bodies a tick's break-ups may make, at most; a crack that finds the
+ * tick's share spent waits for the next. */
+const SPAWN_MAX = 48;
 /** A held floor lets go when a strike on it passes this many times the
  * weight it carries. */
 const HOLD_FACTOR = 3;
@@ -129,8 +148,8 @@ const CRUSH_LOSS = 0.12;
 /** A floor struck harder than this (as a speed lost in a step, m/s) is
  * crushed flat. */
 const CRUSH_SPEED = 3;
-/** A shock's memory: the share left after a step. */
-const SHOCK_DECAY = 0.8;
+/** A shock's memory: the share left after a tick. */
+const SHOCK_DECAY = 0.5;
 /** Strikes slower than this never become chain impacts, m/s. */
 const IMPACT_SPEED_MIN = 4;
 /** A piece lying this still (m/s, rad/s) for FREEZE_S freezes into rubble;
@@ -213,6 +232,10 @@ interface Group {
   stall: number;
   stallTilt: number;
   bears: number;
+  /** Its velocity at the start of this tick (its shock is judged on it). */
+  tx: number;
+  ty: number;
+  tz: number;
   /** Its velocity before this step (a strike is judged on it). */
   vx: number;
   vy: number;
@@ -285,6 +308,12 @@ export class DebrisPhysics implements PhysicsHost {
   peakActive = 0;
   /** The last step's cost, ms (benches, the lab's telemetry). */
   lastStepMs = 0;
+  /** The governed budget (≤ the tier's), and the last steps' costs. */
+  private governed = Number.POSITIVE_INFINITY;
+  private readonly costs = new Float64Array(GOVERN_WINDOW);
+  private costAt = 0;
+  /** Bodies made by break-ups this tick (SPAWN_MAX). */
+  private spawned = 0;
 
   constructor(room: PhysicsRoom, view?: PhysicsView) {
     if (!ready) throw new Error("debris physics used before init");
@@ -297,9 +326,6 @@ export class DebrisPhysics implements PhysicsHost {
   private makeWorld(): RAPIER.World {
     const w = new RAPIER.World({ x: 0, y: -this.room.tuning.gravity, z: 0 });
     w.timestep = PHYS_STEP_S;
-    // Building-sized bodies: the solver's tolerances in metres of rubble,
-    // not centimetres (deep, fast contacts otherwise kick pieces back up).
-    w.lengthUnit = 4;
     // The ground: one slab under the whole torus (and its seam's margin).
     const ground = w.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     w.createCollider(
@@ -318,8 +344,67 @@ export class DebrisPhysics implements PhysicsHost {
 
   /** The moving-body budget now. */
   get budget(): number {
+    return Math.min(
+      this.maxBudget,
+      Math.max(GOVERN_MIN, Math.floor(this.governed)),
+    );
+  }
+
+  /** The tier's budget (× the lab's physBudget): the most it ever allows. */
+  get maxBudget(): number {
     const base = this.view?.budget ?? PHYS_BUDGET.high;
     return Math.max(1, Math.round(base * this.room.tuning.physBudget));
+  }
+
+  /**
+   * The governor: the step's cost over the last GOVERN_WINDOW ticks against
+   * PHYS_STEP_BUDGET_MS. Over it, the budget shrinks (and the slowest,
+   * nearly still bodies freeze to get under it); well under it, it grows
+   * back toward the tier's. So a fast machine runs the tier's full budget
+   * and a slow or busy one keeps the worker inside its step budget.
+   */
+  private govern(ms: number): void {
+    this.costs[this.costAt] = ms;
+    this.costAt = (this.costAt + 1) % GOVERN_WINDOW;
+    // The window's second-worst tick: one stray spike is not a trend.
+    let first = 0;
+    let worst = 0;
+    for (let k = 0; k < GOVERN_WINDOW; k++) {
+      const c = this.costs[k] as number;
+      if (c > first) {
+        worst = first;
+        first = c;
+      } else if (c > worst) worst = c;
+    }
+    const max = this.maxBudget;
+    if (worst > PHYS_STEP_BUDGET_MS && this.active > GOVERN_MIN) {
+      this.governed = Math.max(
+        GOVERN_MIN,
+        Math.min(this.governed, this.active) * GOVERN_SHRINK,
+      );
+      this.costs.fill(0);
+    } else if (worst < PHYS_STEP_BUDGET_MS * GOVERN_EASE) {
+      this.governed = Math.min(max, this.governed + GOVERN_GROW);
+    }
+    if (this.governed > max) this.governed = max;
+    // Over the budget now: the slowest bodies that are all but still go.
+    let over = this.active - this.budget;
+    if (over <= 0) return;
+    const still: Group[] = [];
+    for (const pc of this.collapses) {
+      if (pc.settled) continue;
+      for (const g of pc.groups) {
+        if (g.state !== FREE || g.joint) continue;
+        const v = g.body.linvel();
+        if (v.x * v.x + v.y * v.y + v.z * v.z < GOVERN_STILL_V * GOVERN_STILL_V)
+          still.push(g);
+      }
+    }
+    still.sort((a, b) => a.still - b.still).reverse();
+    for (const g of still) {
+      if (over-- <= 0) break;
+      this.freeze(g);
+    }
   }
 
   /** Collapses still moving (not settled). */
@@ -348,6 +433,8 @@ export class DebrisPhysics implements PhysicsHost {
     this.impacts = [];
     this.pendingHeaps = [];
     this.active = 0;
+    this.governed = Number.POSITIVE_INFINITY;
+    this.costs.fill(0);
     this.epoch = ++epochs;
     this.registry.clear();
   }
@@ -580,6 +667,9 @@ export class DebrisPhysics implements PhysicsHost {
       stall: 0,
       stallTilt: 0,
       bears: 0,
+      tx: 0,
+      ty: 0,
+      tz: 0,
       vx: 0,
       vy: 0,
       vz: 0,
@@ -589,6 +679,11 @@ export class DebrisPhysics implements PhysicsHost {
     };
     this.collide(g);
     this.setThresholds(g);
+    // It starts at its parent's speed: no shock from being born.
+    const v0 = body.linvel();
+    g.tx = v0.x;
+    g.ty = v0.y;
+    g.tz = v0.z;
     for (const i of pieces) pc.of[i] = g;
     pc.groups.push(g);
     if (!held) this.active++;
@@ -815,6 +910,9 @@ export class DebrisPhysics implements PhysicsHost {
     g.freeSince = this.time;
     g.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
     if (v) g.body.setLinvel(v, true);
+    g.tx = v?.x ?? 0;
+    g.ty = v?.y ?? 0;
+    g.tz = v?.z ?? 0;
     this.active++;
     this.peakActive = Math.max(this.peakActive, this.active);
     this.setThresholds(g);
@@ -866,7 +964,11 @@ export class DebrisPhysics implements PhysicsHost {
   ): Group[] | null {
     let list = parts.filter((p) => p.length > 0);
     if (list.length < 2) return null;
-    const room = this.budget - this.active + (g.state === FREE ? 1 : 0);
+    // At most SPAWN_MAX new bodies a tick: a big break-up spreads over a
+    // few ticks rather than spiking one step.
+    const room =
+      Math.min(this.budget - this.active, SPAWN_MAX - this.spawned) +
+      (g.state === FREE ? 1 : 0);
     if (room < 2) return null;
     if (list.length > room) {
       // Merge runs of neighbours (parts come in spatial order).
@@ -886,6 +988,7 @@ export class DebrisPhysics implements PhysicsHost {
     g.state = SPLITTING;
     const made: Group[] = [];
     for (const p of list) made.push(this.makeGroup(pc, p, level, false, g));
+    this.spawned += made.length;
     this.destroy(g);
     if (peel) {
       for (const m of made) {
@@ -935,6 +1038,12 @@ export class DebrisPhysics implements PhysicsHost {
     const c = g.pc.c;
     const b = this.room.buildings[c.building];
     if (!b || g.state !== FREE || g.level >= LEVEL_PIECE) return;
+    if (this.spawned >= SPAWN_MAX - 1) {
+      // This tick's break-ups are spent: it breaks next tick.
+      g.crack = true;
+      g.deep = deep;
+      return;
+    }
     const by = (key: (i: number) => number): number[][] => {
       const m = new Map<number, number[]>();
       for (const i of g.pieces) {
@@ -1062,7 +1171,10 @@ export class DebrisPhysics implements PhysicsHost {
       this.events();
       this.afterStep();
     }
+    if (steps > 0) this.afterTick(steps * PHYS_STEP_S);
     this.lastStepMs = performance.now() - began;
+    this.govern(this.lastStepMs);
+    this.spawned = 0;
   }
 
   /** Held groups whose time has come let go. */
@@ -1341,17 +1453,10 @@ export class DebrisPhysics implements PhysicsHost {
   /** Cracks, hinges snapping, pieces freezing, collapses settling. */
   private afterStep(): void {
     const dt = PHYS_STEP_S;
-    const gravity = this.room.tuning.gravity;
     for (const pc of this.collapses) {
       if (pc.settled) continue;
-      let live = 0;
       for (const g of [...pc.groups]) {
-        if (g.state === HELD) {
-          live++;
-          continue;
-        }
-        if (g.state !== FREE) continue;
-        live++;
+        if (g.state !== FREE || !(g.joint || g.crack)) continue;
         if (g.joint) {
           // Tilt: the angle of the body's up axis off the vertical.
           const up = rotateBy(g.body.rotation(), 0, 1, 0);
@@ -1386,42 +1491,64 @@ export class DebrisPhysics implements PhysicsHost {
             g.deep = tilt < LEAN_TORN_TILT;
           }
         }
-        // Shock: the speed it lost this step beyond gravity's pull, with a
-        // few steps' memory (Rapier stops a slab over several steps).
-        const vel = g.body.linvel();
-        const dvx = vel.x - g.vx;
-        const dvy = vel.y - g.vy + gravity * dt;
-        const dvz = vel.z - g.vz;
+        if (g.crack) {
+          g.crack = false;
+          if (!g.joint) this.crack(g, g.deep);
+        }
+      }
+    }
+  }
+
+  /**
+   * Once per host tick (`dt` s of steps): each moving group's shock — the
+   * speed it lost over the tick beyond gravity's pull, with a tick's memory
+   * (Rapier stops a slab over several steps) — crushes an upright-or-not
+   * floor or breaks a group; what has lain still freezes; a collapse with
+   * nothing left moving or held settles.
+   */
+  private afterTick(dt: number): void {
+    const gravity = this.room.tuning.gravity;
+    for (const pc of this.collapses) {
+      if (pc.settled) continue;
+      let live = 0;
+      for (const g of [...pc.groups]) {
+        if (g.state === HELD) {
+          live++;
+          continue;
+        }
+        if (g.state !== FREE) continue;
+        live++;
+        const v = g.body.linvel();
+        const dvx = v.x - g.tx;
+        const dvy = v.y - g.ty + gravity * dt;
+        const dvz = v.z - g.tz;
         g.shock = g.through
           ? 0
           : g.shock * SHOCK_DECAY +
             Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
         g.through = false;
-        if (!g.joint && !g.crack && g.shock > CRUSH_SPEED) {
+        g.tx = v.x;
+        g.ty = v.y;
+        g.tz = v.z;
+        if (!g.joint && g.shock > CRUSH_SPEED) {
           if (g.level > LEVEL_SECTION && this.crush(g)) {
             // A floor slammed: crushed flat along its own storeys (a
             // stack leaning on a facade slumps down it).
             g.shock = 0;
           } else if (g.shock > this.room.tuning.physFracture) {
-            g.crack = true;
+            this.crack(g);
+            if (g.state !== FREE) continue;
           }
         }
-        if (g.crack) {
-          g.crack = false;
-          if (!g.joint) this.crack(g, g.deep);
-          if (g.state !== FREE) continue;
-        }
-        const v = g.body.linvel();
+        // A section still on its hinge never freezes: it bears down or
+        // tears free first.
+        if (g.joint) continue;
         const w = g.body.angvel();
         const slow =
           v.x * v.x + v.y * v.y + v.z * v.z < FREEZE_V * FREEZE_V &&
           w.x * w.x + w.y * w.y + w.z * w.z < FREEZE_W * FREEZE_W;
         g.still = slow ? g.still + dt : 0;
-        // A section still on its hinge never freezes: it bears down or
-        // tears free first.
-        if (g.joint) continue;
         if (
-          g.body.isSleeping() ||
           g.still >= FREEZE_S ||
           this.time - g.freeSince > FREEZE_MAX_S * 1000
         ) {
@@ -1510,7 +1637,7 @@ export class DebrisPhysics implements PhysicsHost {
     const nx = Math.min(120, Math.ceil((x1 + pad - x0) / HEAP_CELL));
     const nz = Math.min(120, Math.ceil((z1 + pad - z0) / HEAP_CELL));
     const row = nx + 1;
-    let w = new Float32Array(row * (nz + 1));
+    const w = new Float32Array(row * (nz + 1));
     for (let i = 0; i < c.n; i++) {
       if (!pc.of[i] || pc.merged[i]) continue;
       const x = pose[i * 3] as number;
@@ -1527,27 +1654,32 @@ export class DebrisPhysics implements PhysicsHost {
         }
       }
     }
-    // Blur: three box passes, radius 2.
+    // Blur: three box passes, radius 2 — each separable (a 5-tap average
+    // along x, then along z: the same as the 5 × 5 one, edges included).
+    const tmp = new Float32Array(w.length);
     for (let pass = 0; pass < 3; pass++) {
-      const out = new Float32Array(w.length);
       for (let j = 0; j <= nz; j++) {
         for (let k = 0; k <= nx; k++) {
-          let s = 0;
+          let sum = 0;
           let n = 0;
-          for (let dj = -2; dj <= 2; dj++) {
-            const jj = j + dj;
-            if (jj < 0 || jj > nz) continue;
-            for (let dk = -2; dk <= 2; dk++) {
-              const kk = k + dk;
-              if (kk < 0 || kk > nx) continue;
-              s += w[jj * row + kk] as number;
-              n++;
-            }
+          for (let kk = Math.max(0, k - 2); kk <= Math.min(nx, k + 2); kk++) {
+            sum += w[j * row + kk] as number;
+            n++;
           }
-          out[j * row + k] = s / n;
+          tmp[j * row + k] = sum / n;
         }
       }
-      w = out;
+      for (let j = 0; j <= nz; j++) {
+        for (let k = 0; k <= nx; k++) {
+          let sum = 0;
+          let n = 0;
+          for (let jj = Math.max(0, j - 2); jj <= Math.min(nz, j + 2); jj++) {
+            sum += tmp[jj * row + k] as number;
+            n++;
+          }
+          w[j * row + k] = sum / n;
+        }
+      }
     }
     let sum = 0;
     for (let k = 0; k < w.length; k++) sum += w[k] as number;

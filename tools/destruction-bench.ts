@@ -34,6 +34,11 @@
 // missiles (whose trail is the shared pre-D smoke.ts) are reported, not
 // judged.
 //
+// DS1: `city.updateDebris, physics` is the same ruins as a solo page sees
+// them — every collapse posed from physics frames streamed at 20 Hz through
+// the page's PhysRegistry. It is judged like any row; the total counts it
+// as the closed-form row's alternative (only what it costs over it).
+//
 // --digest hashes everything each entry point wrote over one seeded pass
 // (instance matrices and attributes, dust and particle buffers): a change
 // that removes an allocation must leave it byte-identical (D6's did: run
@@ -132,6 +137,73 @@ const staged = stageDestruction(buildings, damage, field, stage, {
   next: QA_ID_BASE,
 });
 const movers = { ...generateMovers(CITY_SEED, buildings), collapses: field };
+
+// DS1: the same ruins as a solo page sees them — every staged collapse
+// posed from physics frames, which arrive at 20 Hz through the page's
+// PhysRegistry (client/src/sim/poses.ts). The frames are built here from the
+// closed form's own poses (a quaternion for its axis and angle, a squash for
+// its height), so the row measures the page's path — ingest, interpolate,
+// pose, matrix — on the same pieces. Absent before DS1: the row is skipped.
+const physMod = await import("@angels-bandits/common/city/physpose").catch(
+  () => null,
+);
+const collapseMod = await import("@angels-bandits/common/city/collapse");
+const physCity = physMod ? new CityRenderer(CITY_SEED) : null;
+const physFeed = ((): ((ms: number) => void) | null => {
+  if (!physMod || !physCity) return null;
+  const pDamage = new CityDamage();
+  const pField = new CollapseField();
+  physCity.attachDamage(pDamage);
+  physCity.attachCollapses(pField);
+  const registry = new physMod.PhysRegistry();
+  pField.attachPhysics(registry);
+  stageDestruction(
+    physCity.cityBuildings as Building[],
+    pDamage,
+    pField,
+    stage,
+    {
+      next: QA_ID_BASE,
+    },
+  );
+  const S = physMod.PIECE_STRIDE;
+  const H = physMod.RECORD_HEAD;
+  let size = 0;
+  for (const c of field.list) size += H + c.n * S;
+  const data = new Float32Array(size);
+  const pose = collapseMod.blankPose();
+  let last = Number.NaN;
+  return (ms: number) => {
+    const tick = Math.floor(ms / 50) * 50;
+    if (tick === last) return;
+    last = tick;
+    let o = 0;
+    for (const c of field.list) {
+      data[o] = c.id;
+      data[o + 1] = c.building;
+      data[o + 2] = c.n;
+      data[o + 3] = 0;
+      o += H;
+      collapseMod.setPoseClock(tick);
+      for (let i = 0; i < c.n; i++) {
+        collapseMod.posePieceNow(c, i, pose);
+        const half = pose.phi / 2;
+        const sn = Math.sin(half);
+        data[o] = pose.x;
+        data[o + 1] = pose.y;
+        data[o + 2] = pose.z;
+        data[o + 3] = pose.axis === 0 ? sn : 0;
+        data[o + 4] = 0;
+        data[o + 5] = pose.axis === 0 ? 0 : sn;
+        data[o + 6] = Math.cos(half);
+        data[o + 7] = pose.rest ? 2 : 1;
+        data[o + 8] = pose.hy / (c.hy[i] as number);
+        o += S;
+      }
+    }
+    registry.ingest(tick, 1, data, null);
+  };
+})();
 
 const impacts = new Impacts();
 const explosions = new Explosions();
@@ -284,6 +356,18 @@ const ENTRIES: { name: string; step: Step; reset?: () => void }[] = [
       city.updateDebris(viewer, ms);
     },
   },
+  ...(physCity && physFeed
+    ? [
+        {
+          name: "city.updateDebris, physics (DS1)",
+          step: (f: number) => {
+            const { ms } = frameAt(f);
+            physFeed(ms);
+            physCity.updateDebris(viewer, ms);
+          },
+        },
+      ]
+    : []),
   {
     name: "dust.update",
     step: (f) => {
@@ -542,7 +626,20 @@ const over = rows.filter(
   (r) => !REFERENCE.test(r.entry) && !(r.bytesPerFrame <= BUDGET_BYTES), // NaN (never GC-free) fails too
 );
 const judged = rows.filter((r) => !REFERENCE.test(r.entry));
-const total = judged.reduce((n, r) => n + r.bytesPerFrame, 0);
+/** DS1: a row that is another's alternative (a solo page poses a collapse
+ * one way or the other, never both): the total counts the larger. */
+const ALTERNATIVE: Record<string, string> = {
+  "city.updateDebris, physics (DS1)": "city.updateDebris",
+};
+const bytesOf = (name: string) =>
+  rows.find((r) => r.entry === name)?.bytesPerFrame ?? 0;
+const total = judged.reduce((n, r) => {
+  const of = ALTERNATIVE[r.entry];
+  // The alternative adds only what it costs over the row it replaces.
+  return (
+    n + (of ? Math.max(0, r.bytesPerFrame - bytesOf(of)) : r.bytesPerFrame)
+  );
+}, 0);
 const totalOver = !(total <= TOTAL_BUDGET_BYTES);
 if (process.argv.includes("--json")) {
   console.log(

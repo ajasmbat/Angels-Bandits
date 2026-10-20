@@ -40,6 +40,11 @@ export const PIECE_HELD = 0;
 export const PIECE_MOVING = 1;
 export const PIECE_FROZEN = 2;
 
+/** The clock the hot pose reads run at (collapse.ts's poseClock is this
+ * object): a double handed to a call V8 declines to inline is boxed — one
+ * HeapNumber per piece per frame (O5's rule) — so the time rides in here. */
+export const PHYS_CLOCK = { tMs: 0 };
+
 /** Frames each collapse keeps outside a lab: 0.6 s at 20 Hz — the page's
  * render clock trails the host by ~100–200 ms. */
 const RING = 12;
@@ -242,7 +247,10 @@ export class PhysPoses {
       this.count = Math.min(this.count + 1, this.cap);
     }
     this.times[s] = t;
-    this.data.set(src.subarray(at, at + len), s * len);
+    // A loop, not set(subarray()): no view object per record per tick.
+    const d = this.data;
+    const o = s * len;
+    for (let k = 0; k < len; k++) d[o + k] = src[at + k] as number;
     const b = this.bounds;
     for (let i = 0; i < this.n; i++) {
       const o = at + i * PIECE_STRIDE;
@@ -278,11 +286,13 @@ export class PhysPoses {
   }
 
   /**
-   * Piece `i` at host time `tMs` into `out` (sizes from `c`): the frames
-   * either side, interpolated; the first frame before it (a piece held in
-   * place stands where it stood), the newest after. Allocation-free.
+   * Piece `i` at host time PHYS_CLOCK.tMs into `out` (sizes from `c`): the
+   * frames either side, interpolated; the first frame before it (a piece
+   * held in place stands where it stood), the newest after.
+   * Allocation-free.
    */
-  pose(c: PieceSizes, i: number, tMs: number, out: PoseOut): PoseOut {
+  pose(c: PieceSizes, i: number, out: PoseOut): PoseOut {
+    const tMs = PHYS_CLOCK.tMs;
     out.hx = c.hx[i] as number;
     out.hy = c.hy[i] as number;
     out.hz = c.hz[i] as number;
@@ -358,6 +368,13 @@ export class PhysPoses {
 
   /** Piece `i`'s state in the frame at or before `tMs`. */
   state(i: number, tMs: number): number {
+    PHYS_CLOCK.tMs = tMs;
+    return this.stateNow(i);
+  }
+
+  /** Piece `i`'s state at PHYS_CLOCK.tMs (the per-frame loops' form). */
+  stateNow(i: number): number {
+    const tMs = PHYS_CLOCK.tMs;
     const n = this.count;
     if (n === 0) return PIECE_HELD;
     let k = n - 1;

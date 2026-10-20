@@ -106,7 +106,7 @@ import type { Building } from "./index";
 // a crane fall reads the crane's boxes). Every use is at call time.
 import { type CraneSite, craneBoxesAt, slewAngle } from "./movers";
 import type { PhysPoses, PhysRegistry } from "./physpose";
-import { sphereHitsHeap } from "./physpose";
+import { PHYS_CLOCK, sphereHitsHeap } from "./physpose";
 import { mulberry32 } from "./rng";
 import {
   MAT_CONCRETE,
@@ -1175,7 +1175,7 @@ export function piecePose(
 /** poseNow()'s time. D10: the collision loop poses ~4× the pieces D3 did,
  * and a double handed to a call V8 does not inline is boxed (O5's rule) —
  * so the loop sets the clock once and poses with no double argument. */
-const poseClock = { tMs: 0 };
+const poseClock = PHYS_CLOCK;
 
 /** D10: set the clock posePieceNow() poses at (once per frame, not once
  * per piece — the per-frame posing loops' allocation-free path). */
@@ -1200,7 +1200,7 @@ export const collapseSettledAt = (c: Collapse): number =>
 /** piecePose at `poseClock.tMs`. */
 function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
   // DS1: a physics collapse poses from its frames (and a crane never is).
-  if (c.phys !== null) return c.phys.pose(c, i, poseClock.tMs, out);
+  if (c.phys !== null) return c.phys.pose(c, i, out);
   out.quat = false;
   const tau = (poseClock.tMs - c.t0) / 1000 - (c.start[i] as number);
   const land = c.land[i] as number;

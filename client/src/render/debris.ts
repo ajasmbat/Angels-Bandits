@@ -190,6 +190,10 @@ export const FRACTURE_VERTEX_GLSL = /* glsl */ `
   vMeters = transformed * sScale + aSubOff.xyz;
   vWorldY = transformed.y * sScale.y + instanceMatrix[3].y;
   vBWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+  // DS1: patterns ride the piece (its tier frame, in metres) — a storey's
+  // slab lines along its own storeys, however it lands or tumbles.
+  vPatPos = vMeters;
+  vPatY = vMeters.y;
   // D11 lit debris: falling (no CUT_RUBBLE bit yet), the chip depth, and
   // how far this face looks down once posed (a box face's direction under
   // R·S is R·n — the scale only lengthens it).

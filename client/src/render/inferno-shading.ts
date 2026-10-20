@@ -272,7 +272,7 @@ if (gutK > 0.0 && brkDmg < 0.5) {
 if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
   float wrK = smoothstep(0.3, 0.8, uBurn);
   vec3 wrN = abs(vObjNormal);
-  vec2 wrW = wrN.x > 0.5 ? vBWorldPos.zy : wrN.z > 0.5 ? vBWorldPos.xy : vBWorldPos.xz;
+  vec2 wrW = wrN.x > 0.5 ? vPatPos.zy : wrN.z > 0.5 ? vPatPos.xy : vPatPos.xz;
   // G7: the 6 m room × storey cells resolve to their means well before
   // they are sub-pixel (the grid's top-level wAA: no derivative here).
   // Rooms burn or not at random: resolved while a room is still ~12 px.
@@ -281,7 +281,7 @@ if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
   if (brkDmg < 1.5) {
     // An exposed storey: most rooms between the slabs on fire, hottest
     // at the floor, a few burnt out (the reference's lit skeletons).
-    float wrStorey = vWorldY / ${BROKEN_STOREY.toFixed(1)};
+    float wrStorey = vPatY / ${BROKEN_STOREY.toFixed(1)};
     float wrIn = fract(wrStorey);
     float wrRoom = abHash(vec2(floor(wrW.x / 6.0), floor(wrStorey)), vBSeed * 13.0);
     float wrP = 0.3 + 0.5 * wrK;
@@ -290,7 +290,7 @@ if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
     totalEmissiveRadiance += ${WRECK_FIRE} * (wrLit * wrHeat * wrFlick * wrK);
   } else {
     // Rubble: glowing patches of embers under the soot.
-    float wrPatch = mix(0.5, smoothstep(0.3, 0.7, abHash(floor(vBWorldPos.xz * 0.6), vBSeed * 19.0)),
+    float wrPatch = mix(0.5, smoothstep(0.3, 0.7, abHash(floor(vPatPos.xz * 0.6), vBSeed * 19.0)),
       abDetail(1.67, max(wAA.x, wAA.y)));
     totalEmissiveRadiance += ${WRECK_EMBER} * (wrPatch * wrFlick * wrK);
   }

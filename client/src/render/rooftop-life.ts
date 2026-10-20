@@ -59,10 +59,13 @@ import { BakedHider, type StandingLayer, StandingMask } from "./standing-watch";
 // --- Layout rules --------------------------------------------------------
 
 /** Parties and pools only on flat roofs below this — the flight band's
- * mid-rises, far under the searchlight stations (the ten tallest, ~190 m+). */
-export const LIFE_MAX_HEIGHT = 120;
-/** Flags fly on roofs below this (antenna masts own the tall ones). */
-export const FLAG_MAX_HEIGHT = 150;
+ * mid-rises, far under the searchlight stations (the ten tallest, ~190 m+).
+ * T1: 120 → 220 — the ring's roofs (100–265 m) are where the fight flies
+ * over now, and its stations stand on the tallest towers under the deck. */
+export const LIFE_MAX_HEIGHT = 220;
+/** Flags fly on roofs below this (antenna masts own the tall ones). T1:
+ * 150 → 230, over the ring's mid-rises. */
+export const FLAG_MAX_HEIGHT = 230;
 /** Smallest top-roof side (BOTH sides) that hosts a party / a pool, m. */
 export const PARTY_MIN_ROOF = 22;
 export const POOL_MIN_ROOF = 20;

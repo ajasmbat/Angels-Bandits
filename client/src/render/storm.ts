@@ -23,7 +23,11 @@ import {
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import { type Strike, strikesInWindow } from "@angels-bandits/common/storm";
-import { type Vec3, wrapDistance } from "@angels-bandits/common/world";
+import {
+  type Vec3,
+  wrapDeltaAxis,
+  wrapDistance,
+} from "@angels-bandits/common/world";
 import * as THREE from "three";
 import { emissiveBoost } from "./emissive";
 import { CITY_GLOW, HAZE_PARAMS, HAZE_WEATHER } from "./fog";
@@ -728,12 +732,47 @@ const CEILING_Y = CLOUD_BASE - 3;
  * deck came down under 500 m (CLOUD_BASE 440), so it reads from the street
  * by itself and is never lifted (a negative lift would fog it MORE). */
 export const DECK_FOG_LIFT = Math.max(0, Math.min(CLOUD_BASE - 500, 150));
-const DECK_FOG_DEFINES = { AB_FOG_LIFT: DECK_FOG_LIFT.toFixed(1) };
+const DECK_FOG_DEFINES = {
+  AB_FOG_LIFT: DECK_FOG_LIFT.toFixed(1),
+  // T1: the deck is never hazed by itself (fog.ts DECK_DENSITY).
+  AB_NO_DECK: "",
+};
 const CEILING_COLOR = 0x07090f;
 const CEILING_OPACITY = 0.55;
 /** L7b: the sheet thins from CEILING_NEAR to CEILING_FAR m from the viewer. */
 const CEILING_NEAR = 220;
 const CEILING_FAR = 620;
+/**
+ * T1 the supertall canyon — no open sky. Seen from UNDER it the sheet is
+ * the storm deck itself: near-opaque at every distance (its far edge is
+ * fogged into the sky-matched fog colour, which is the dome's own colour
+ * behind it, so it meets the horizon without a seam — what L7b's thinning
+ * avoided is the point now: no stars and no moon through a 440 m deck),
+ * its underside billowed (DECK_BILLOW cells, drifting with the puffs) and
+ * lit amber by the city under it, thinner in the troughs so a supertall's
+ * crown shows hazily through before the cloud takes it. Seen from above
+ * (flying in the deck) it is L7b's sheet. The towers that pierce it fade
+ * into the same deck (fog.ts DECK_DENSITY).
+ */
+const DECK_BELOW_ALPHA = [0.88, 0.98] as const;
+/** The sheet's subdivisions per side (its fog is measured per vertex). */
+const CEILING_SEGMENTS = 24;
+/** T1: where a supertall pierces the deck its windows light the cloud
+ * round it (warm, DECK_TOWER_GLOW_RGB, out to DECK_TOWER_REACH × its
+ * half-diagonal) and its aircraft-warning beacons flash red in it, on the
+ * buildings' blink (1.6 s, a third of the towers in each phase) — the
+ * nearest DECK_TOWER_MAX of them, from under the deck. */
+const DECK_TOWER_MAX = 12;
+const DECK_TOWER_REACH = 2.0;
+const DECK_TOWER_GLOW_RGB = "vec3(0.30, 0.18, 0.08)";
+const DECK_TOWER_FLASH_RGB = "vec3(0.65, 0.07, 0.05)";
+const DECK_TOWER_BLINK_S = 1.6;
+/** Billow cell, m — a whole number per WORLD_SIZE, so the deck tiles the
+ * torus. */
+const DECK_BILLOW = 125;
+/** The underside's lit colour (linear): the city's sodium glow on cloud,
+ * on the billows' crests. */
+const DECK_LIT_RGB = "vec3(0.130, 0.090, 0.070)";
 
 /** L7: glow spots the deck takes, its glow colour (linear) and mix. */
 const DECK_GLOW_MAX = 8;
@@ -785,6 +824,21 @@ export class CloudDeck {
     value: Array.from({ length: DECK_GLOW_MAX }, () => new THREE.Vector4()),
   };
   private readonly glowCountU = { value: 0 };
+  /** T1: 1 with the viewer under the deck (the storm ceiling), 0 over it;
+   * and the billows' drift, m. */
+  private readonly belowU = { value: 1 };
+  private readonly driftU = { value: 0 };
+  /** T1: the supertalls piercing the deck (render x, z, half-diagonal,
+   * blink phase), nearest first, their count, and the synced clock, s. */
+  private readonly towerU = {
+    value: Array.from({ length: DECK_TOWER_MAX }, () => new THREE.Vector4()),
+  };
+  private readonly towerCountU = { value: 0 };
+  private readonly timeU = { value: 0 };
+  private towers: readonly Building[] = [];
+  private towerR = new Float64Array(0);
+  private readonly towerD = new Float64Array(DECK_TOWER_MAX);
+  private readonly towerI = new Int32Array(DECK_TOWER_MAX);
   private readonly puffBase = new THREE.Color(PUFF_COLOR);
   private readonly puffTint = new THREE.Color();
   private glowSpots: Float32Array = new Float32Array(0);
@@ -840,6 +894,11 @@ export class CloudDeck {
     ceilingMat.onBeforeCompile = (shader) => {
       shader.uniforms.uDeckGlow = this.glowU;
       shader.uniforms.uDeckGlowCount = this.glowCountU;
+      shader.uniforms.uDeckBelow = this.belowU;
+      shader.uniforms.uDeckDrift = this.driftU;
+      shader.uniforms.uDeckTower = this.towerU;
+      shader.uniforms.uDeckTowerCount = this.towerCountU;
+      shader.uniforms.uDeckTime = this.timeU;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -856,7 +915,25 @@ export class CloudDeck {
 varying vec2 vDeckXZ;
 varying float vDeckR;
 uniform vec4 uDeckGlow[${DECK_GLOW_MAX}];
-uniform int uDeckGlowCount;`,
+uniform int uDeckGlowCount;
+uniform float uDeckBelow;
+uniform float uDeckDrift;
+uniform vec4 uDeckTower[${DECK_TOWER_MAX}];
+uniform int uDeckTowerCount;
+uniform float uDeckTime;
+// T1: value noise on the billow lattice, periodic over WORLD_SIZE (floored
+// cells hashed — never an interpolated input).
+float abDeckHash(vec2 c) {
+  c = mod(c, ${(WORLD_SIZE / DECK_BILLOW).toFixed(1)});
+  return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453);
+}
+float abDeckNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = p - i;
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(abDeckHash(i), abDeckHash(i + vec2(1.0, 0.0)), u.x),
+             mix(abDeckHash(i + vec2(0.0, 1.0)), abDeckHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}`,
         )
         .replace(
           "#include <color_fragment>",
@@ -873,13 +950,41 @@ deckGlow = min(deckGlow, 1.0);
 // would lay a flat fogged lid over the whole storm sky, so it thins with
 // distance from the viewer (the glow over the fires a good deal less).
 float deckNear = 1.0 - smoothstep(${CEILING_NEAR.toFixed(1)}, ${CEILING_FAR.toFixed(1)}, vDeckR);
+// T1: from under it, the storm deck — billowed, lit by the city, near-opaque.
+vec2 billowP = (vDeckXZ + vec2(uDeckDrift, 0.0)) / ${DECK_BILLOW.toFixed(1)};
+float billow = 0.65 * abDeckNoise(billowP) + 0.35 * abDeckNoise(billowP * 2.0 + vec2(7.0, 3.0));
+vec3 deckBelowRgb = mix(diffuseColor.rgb, ${DECK_LIT_RGB}, smoothstep(0.25, 0.85, billow));
+// T1: the supertalls' windows lighting the cloud they rise into, and
+// their beacons flashing in it.
+vec3 towerLight = vec3(0.0);
+for (int i = 0; i < ${DECK_TOWER_MAX}; i++) {
+  if (i >= uDeckTowerCount) break;
+  vec4 tw = uDeckTower[i];
+  float dT = distance(vDeckXZ, tw.xy);
+  float kT = 1.0 - smoothstep(tw.z * 0.6, tw.z * ${DECK_TOWER_REACH.toFixed(1)}, dT);
+  float ph = fract(uDeckTime / ${DECK_TOWER_BLINK_S.toFixed(2)} + tw.w);
+  float on = smoothstep(0.0, 0.06, ph) * (1.0 - smoothstep(0.3, 0.4, ph));
+  towerLight += kT * kT * (${DECK_TOWER_GLOW_RGB} + ${DECK_TOWER_FLASH_RGB} * on * kT);
+}
+deckBelowRgb += towerLight;
+diffuseColor.rgb = mix(diffuseColor.rgb, deckBelowRgb, uDeckBelow);
 diffuseColor.rgb = mix(diffuseColor.rgb, ${DECK_GLOW_RGB}, deckGlow * ${DECK_GLOW_MIX.toFixed(2)});
-diffuseColor.a = max(diffuseColor.a * mix(0.15, 1.0, deckNear), deckGlow * mix(0.45, 0.8, deckNear));`,
+float aboveA = max(diffuseColor.a * mix(0.15, 1.0, deckNear), deckGlow * mix(0.45, 0.8, deckNear));
+float belowA = max(mix(${DECK_BELOW_ALPHA[0].toFixed(2)}, ${DECK_BELOW_ALPHA[1].toFixed(2)}, smoothstep(0.2, 0.8, billow)), deckGlow * 0.8);
+diffuseColor.a = mix(aboveA, belowA, uDeckBelow);`,
         );
     };
-    ceilingMat.customProgramCacheKey = () => "ab-cloud-ceiling-l7b-glow";
+    ceilingMat.customProgramCacheKey = () => "ab-cloud-ceiling-l7b-glow-t1";
+    // T1: subdivided — the fog chunk measures distance per VERTEX, and over
+    // one 1.8 km quad every pixel read its corners' ~1.3 km: the sheet was
+    // all fog colour. A vertex every ~75 m fogs it by its real distance.
     this.ceiling = new THREE.Mesh(
-      new THREE.PlaneGeometry(2 * FOG_DISTANCE + 200, 2 * FOG_DISTANCE + 200),
+      new THREE.PlaneGeometry(
+        2 * FOG_DISTANCE + 200,
+        2 * FOG_DISTANCE + 200,
+        CEILING_SEGMENTS,
+        CEILING_SEGMENTS,
+      ),
       ceilingMat,
     );
     this.ceiling.rotation.x = Math.PI / 2;
@@ -908,11 +1013,72 @@ diffuseColor.a = max(diffuseColor.a * mix(0.15, 1.0, deckNear), deckGlow * mix(0
     this.puffs.instanceMatrix.needsUpdate = true;
     this.tintPuffs();
     this.ceiling.position.set(viewer.x, CEILING_Y, viewer.z);
+    // T1: the storm ceiling from under it, fading to L7b's sheet as the
+    // viewer climbs into the deck.
+    this.belowU.value =
+      1 - Math.min(1, Math.max(0, (viewer.y - (CEILING_Y - 20)) / 20));
+    this.driftU.value = driftX % WORLD_SIZE;
+    this.timeU.value = ((((serverTimeMs ?? 0) / 1000) % 7200) + 7200) % 7200;
+    this.placeTowers(viewer);
     // In front of the puffs from below, behind them from above (O1).
     this.ceiling.renderOrder =
       viewer.y < CEILING_Y
         ? RENDER_ORDER.cloudCeilingBelow
         : RENDER_ORDER.cloudCeilingAbove;
+  }
+
+  /** T1: the city's buildings that rise into the deck (its supertalls and
+   * mega-towers) — the deck lights where each pierces it. */
+  setTowers(buildings: readonly Building[]): void {
+    this.towers = buildings.filter((b) => b.height > CLOUD_BASE);
+    // The half-diagonal of the tier each pierces the deck with.
+    this.towerR = Float64Array.from(this.towers, (b) => {
+      let base = 0;
+      for (const t of b.tiers) {
+        if (base + t.height > CLOUD_BASE)
+          return Math.hypot(t.width, t.depth) / 2;
+        base += t.height;
+      }
+      return 30;
+    });
+  }
+
+  /** The nearest DECK_TOWER_MAX still-standing towers to `viewer`, into
+   * the uniform (an insertion sort; nothing allocated). */
+  private placeTowers(viewer: Vec3): void {
+    let n = 0;
+    for (let i = 0; i < this.towers.length; i++) {
+      const b = this.towers[i] as Building;
+      const d = Math.hypot(
+        wrapDeltaAxis(viewer.x, b.x),
+        wrapDeltaAxis(viewer.z, b.z),
+      );
+      if (d > FOG_DISTANCE + 100) continue;
+      if (n === DECK_TOWER_MAX && d >= (this.towerD[n - 1] as number)) continue;
+      // A tower brought down under the deck lights no cloud.
+      if (b.damage && standingTopAt(b, 0, 0) <= CLOUD_BASE) continue;
+      let k = n < DECK_TOWER_MAX ? n++ : n - 1;
+      while (k > 0 && (this.towerD[k - 1] as number) > d) {
+        this.towerD[k] = this.towerD[k - 1] as number;
+        this.towerI[k] = this.towerI[k - 1] as number;
+        k--;
+      }
+      this.towerD[k] = d;
+      this.towerI[k] = i;
+    }
+    const u = this.towerU.value;
+    for (let k = 0; k < n; k++) {
+      const i = this.towerI[k] as number;
+      const b = this.towers[i] as Building;
+      (u[k] as THREE.Vector4).set(
+        viewer.x + wrapDeltaAxis(viewer.x, b.x),
+        viewer.z + wrapDeltaAxis(viewer.z, b.z),
+        this.towerR[i] as number,
+        // A third of the towers in each phase.
+        (Math.floor(Math.abs(b.x * 7 + b.z * 13)) % 3) / 3,
+      );
+    }
+    this.towerCountU.value = n;
   }
 
   /**

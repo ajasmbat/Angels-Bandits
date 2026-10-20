@@ -55,6 +55,7 @@ import {
 } from "@angels-bandits/common/collision";
 import {
   COLLAPSE_CAP,
+  DESTRUCTION_CHUNK_BUDGET,
   LANDMARK_HEIGHT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
@@ -641,9 +642,14 @@ export class CityRenderer {
       for (const mask of chunkMask(b)) for (const v of mask) chunks += v;
     }
     // D10: a chunk falls as ~3.76 pieces on average over the seed city
-    // (storey slabs, a sheet, a column; hole splits included).
+    // (storey slabs, a sheet, a column; hole splits included). T1: of the
+    // chunks the caps count (DESTRUCTION_CHUNK_BUDGET at most).
     this.bBootCapacity =
-      Math.ceil(chunks * COLLAPSE_CAP * DEBRIS_PIECES_PER_CHUNK) + 64;
+      Math.ceil(
+        Math.min(chunks, DESTRUCTION_CHUNK_BUDGET) *
+          COLLAPSE_CAP *
+          DEBRIS_PIECES_PER_CHUNK,
+      ) + 64;
     this.growDebris(this.bBootCapacity);
   }
 

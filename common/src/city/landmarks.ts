@@ -30,8 +30,11 @@ export interface LandmarkProfile {
  * The landmark silhouettes, one per LANDMARK_BLOCKS slot (a longer block
  * list cycles through them). H1 scaled L3's four designs up into the
  * city's supertalls — same styles, same tier rhythm, shafts ~2× taller and
- * ~15 % wider. Every profile:
- *  - sums to between LANDMARK_HEIGHT (400 m) and CITY_TOP (480 m), the
+ * ~15 % wider. T1 stretched them again into mega-towers, 720–1000 m, that
+ * vanish into the storm deck: the shafts ~2× taller at the same widths
+ * (the airships orbit and moor round them — common/src/boss.ts). Every
+ * profile:
+ *  - sums to between LANDMARK_HEIGHT (700 m) and CITY_TOP (1000 m), the
  *    tallest summing to exactly CITY_TOP — `height >= LANDMARK_HEIGHT` is
  *    how the whole codebase recognises a landmark, and nothing generated
  *    reaches it;
@@ -49,36 +52,36 @@ export const LANDMARK_PROFILES: readonly LandmarkProfile[] = [
     style: "glass",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 60, depth: 60, height: 332 },
-      { width: 34, depth: 34, height: 57 },
-      { width: 10, depth: 10, height: 31 },
+      { width: 60, depth: 60, height: 780 },
+      { width: 34, depth: 34, height: 105 },
+      { width: 10, depth: 10, height: 55 },
     ],
   },
   {
     style: "ziggurat",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 72, depth: 72, height: 197 },
-      { width: 52, depth: 52, height: 72 },
-      { width: 34, depth: 34, height: 71 },
+      { width: 72, depth: 72, height: 400 },
+      { width: 52, depth: 52, height: 140 },
+      { width: 34, depth: 34, height: 120 },
     ],
   },
   {
     style: "spire",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 72, depth: 72, height: 287 },
-      { width: 40, depth: 40, height: 62 },
-      { width: 10, depth: 10, height: 41 },
+      { width: 72, depth: 72, height: 640 },
+      { width: 40, depth: 40, height: 120 },
+      { width: 10, depth: 10, height: 80 },
     ],
   },
   {
     style: "arches",
     tiers: [
       { width: 90, depth: 90, height: 60 },
-      { width: 64, depth: 64, height: 265 },
-      { width: 40, depth: 40, height: 66 },
-      { width: 10, depth: 10, height: 39 },
+      { width: 64, depth: 64, height: 590 },
+      { width: 40, depth: 40, height: 110 },
+      { width: 10, depth: 10, height: 60 },
     ],
   },
 ];

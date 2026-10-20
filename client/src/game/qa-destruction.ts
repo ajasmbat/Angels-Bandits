@@ -127,7 +127,7 @@ export function stageDestruction(
         `qaDestruction: ${touched.length} buildings within ${area.r} m of (${area.x}, ${area.z}), the spec expects ${area.buildings} — the city changed`,
       );
     }
-    const room = Math.floor(DESTROY_CAP * damage.chunkCount);
+    const room = Math.floor(DESTROY_CAP * damage.capBasis);
     const rand = mulberry32(area.seed);
     const pick: number[] = [];
     for (const i of touched) {
@@ -143,7 +143,7 @@ export function stageDestruction(
     broken = pick.length;
     const capped = () =>
       damage.destroyedCount + damage.fallenCount >=
-      COLLAPSE_CAP * damage.chunkCount;
+      COLLAPSE_CAP * damage.capBasis;
     for (const i of touched) {
       if (capped()) break;
       for (const plan of planCollapses(buildings[i] as Building, i)) {

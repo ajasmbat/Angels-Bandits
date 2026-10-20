@@ -50,7 +50,11 @@ import {
 import { LOT_LINE } from "@angels-bandits/common/city/street";
 import {
   BLOCK_PITCH,
+  BUILDING_MAX_HEIGHT,
+  CITY_TOP,
+  CLOUD_BASE,
   FOG_DISTANCE,
+  LANDMARK_HEIGHT,
   WORLD_SIZE,
 } from "@angels-bandits/common/constants";
 import * as THREE from "three";
@@ -142,6 +146,17 @@ const BEACON_PEAK = 0.58;
 const BLINK_S = 1.6;
 /** Towers over this get a mast with a beacon (most of them), m. */
 const MAST_MIN_H = 130;
+/** T1: the far city's tallest lattice tower and its spires' heights, m —
+ * the near city's: the cores' supertalls (BUILDING_MAX_HEIGHT) and the
+ * mega-towers (LANDMARK_HEIGHT–CITY_TOP), up into the deck. */
+const FAR_TOWER_MAX_H = BUILDING_MAX_HEIGHT;
+const FAR_SPIRE_H = [LANDMARK_HEIGHT, CITY_TOP] as const;
+/** T1: a far tower fades into the deck from its base over this, m — the
+ * near city's deck (fog.ts DECK_DENSITY) at the far field's scale, so the
+ * horizon is a wall of city rising into cloud. Its lights carry further
+ * (DECK_LIGHT_KEEP of them never fade). */
+const FAR_DECK_FADE = 140;
+const FAR_DECK_LIGHT_KEEP = 0.3;
 const MAST_SHARE = 0.65;
 const EMBER_COLOR = 0xff5a1c;
 const EMBER_PEAK = 0.5;
@@ -375,7 +390,7 @@ void main() {
     c = aTowerA.xy * ${f(FAR_SUPER)} + uFarSuperFrac + sp.yz * ${f(BLOCK_PITCH)} + ${f(BLOCK_PITCH / 2)};
     hsz = vec2(40.0);
     seed = sp.w;
-    H = 290.0 + 170.0 * fract(seed * 7.31);
+    H = ${f(FAR_SPIRE_H[0])} + ${f(FAR_SPIRE_H[1] - FAR_SPIRE_H[0])} * fract(seed * 7.31);
     occ = 0.32;
     style = 1.0;
     ends = vec3(0.56, 0.72, 0.86);
@@ -622,6 +637,13 @@ void main() {
   // crown, neon, embers): a luminance cap under 0.72 before the far fade.
   em *= min(1.0, 0.7 / max(dot(em, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
   em = abFarAirLight(em, depth);
+  // T1: up into the deck — the tower's own colour fades to the fog's from
+  // the deck's base, its lights a little less, so the far supertalls
+  // vanish into the cloud as the near ones do (seen from under it).
+  float deck = smoothstep(${f(CLOUD_BASE)}, ${f(CLOUD_BASE + FAR_DECK_FADE)}, vLoc.y)
+    * (1.0 - smoothstep(${f(CLOUD_BASE - 10)}, ${f(CLOUD_BASE + 30)}, cameraPosition.y));
+  col = mix(col, fogC, deck);
+  em *= 1.0 - (1.0 - ${FAR_DECK_LIGHT_KEEP.toFixed(2)}) * deck;
   float vis = abFarVis(d) * vInfo.z;
   // R1 silhouette AA: the pixel distance to the part's true edge, on the
   // edges whose neighbouring face is turned away (the outline; an inner
@@ -856,9 +878,14 @@ export function farCellTower(
   a[i * 4 + 1] = loZ + hz + (hiZ - hz - (loZ + hz)) * tz;
   a[i * 4 + 2] = hx;
   a[i * 4 + 3] = hz;
-  // Dense districts cluster tall: the downtowns stand out of the city.
+  // Dense districts cluster tall: the downtowns stand out of the city. T1:
+  // the far city matches the near one — towers everywhere, the dense
+  // districts' supertalls up into the deck (as high as the cores', 650 m).
   const r = bits(h, 24);
-  const H = Math.min(340, 16 + 60 * dens + (24 + 250 * dens * dens) * r * r);
+  const H = Math.min(
+    FAR_TOWER_MAX_H,
+    60 + 110 * dens + (60 + 560 * dens * dens) * r * r,
+  );
   let style = 0;
   // Art Deco setbacks on the tall ones, some with a needle.
   if (H > 105 && bits(h2, 24) < 0.5) style = bits(h2, 4) < 0.35 ? 3 : 2;

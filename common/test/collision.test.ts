@@ -5,7 +5,11 @@ import {
   hitsGround,
   losClear,
 } from "@angels-bandits/common/collision";
-import { BLOCK_PITCH, WORLD_SIZE } from "@angels-bandits/common/constants";
+import {
+  BLOCK_PITCH,
+  CITY_TOP,
+  WORLD_SIZE,
+} from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
 
 // Hand-built buildings with worked-example geometry; the last block consumes
@@ -252,14 +256,16 @@ describe("losClear against real generateCity() output", () => {
 
   it("is blocked by the landmark shaft at (500, 700) and clear above it", () => {
     // Landmark tiers are seed-independent: 90 m podium to y=60, 60 m shaft to
-    // y=392, 34 m crown to y=449, 10 m needle to CITY_TOP (480). At y=150
+    // y=840, 34 m crown to y=945, 10 m needle to CITY_TOP (1000). At y=150
     // the shaft spans x 470..530.
     expect(
       losClear({ x: 300, y: 150, z: 700 }, { x: 700, y: 150, z: 700 }, city),
     ).toBe(false);
-    // Nothing in the city reaches CITY_TOP + 20, so 500 m sees clean across.
+    // Nothing in the city reaches CITY_TOP + 20, so that high sees clean
+    // across.
+    const over = CITY_TOP + 20;
     expect(
-      losClear({ x: 300, y: 500, z: 700 }, { x: 700, y: 500, z: 700 }, city),
+      losClear({ x: 300, y: over, z: 700 }, { x: 700, y: over, z: 700 }, city),
     ).toBe(true);
   });
 

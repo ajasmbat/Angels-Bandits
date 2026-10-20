@@ -40,9 +40,9 @@ import {
   BLIMP_ALT,
   BLIMP_HULL,
   BOT_CEILING_ALT,
-  BUILDING_MAX_HEIGHT,
   MAX_HP,
   PLAYER_RADIUS,
+  SKYLINE_RING_MAX_HEIGHT,
   SMOKE_HP_FRAC,
   SOFT_CEILING,
   WORLD_SIZE,
@@ -81,10 +81,13 @@ export const PILOT_ALT_MAX = Math.min(
 /** The cruise cap: just over the generated skyline (roofs and their
  * structures) and its clearance — the pilots cruise under it and steer
  * round anything that would lift them over it (the landmark supertalls),
- * which keeps them low and among the towers. Never over PILOT_ALT_MAX. */
+ * which keeps them low and among the towers. Never over PILOT_ALT_MAX.
+ * T1: the skyline they cruise over is the ring round the cores
+ * (SKYLINE_RING_MAX_HEIGHT); the cores' supertalls, up through the deck,
+ * are flown round like the landmarks. */
 export const PILOT_CRUISE_CAP = Math.min(
   PILOT_ALT_MAX,
-  BUILDING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT + PILOT_CLEAR + 10,
+  SKYLINE_RING_MAX_HEIGHT + ROOF_STRUCTURE_MAX_HEIGHT + PILOT_CLEAR + 10,
 );
 /** A pilot's preferred height over its terrain-following floor, m — a
  * per-pilot draw in [0, this). */
@@ -840,6 +843,13 @@ export function stepPilot(
   p.pos.x = wrapCoord(p.pos.x - Math.sin(p.yaw) * cp * p.speed * dt);
   p.pos.z = wrapCoord(p.pos.z - Math.cos(p.yaw) * cp * p.speed * dt);
   p.pos.y += Math.sin(p.pitch) * p.speed * dt;
+  // T1: never over the band's top — a climb to a target at it overshoots,
+  // and the cores' supertalls in the lookahead now bring it there — though
+  // the hard floor below still wins.
+  if (p.pos.y > PILOT_ALT_MAX) {
+    p.pos.y = PILOT_ALT_MAX;
+    if (p.pitch > 0) p.pitch = 0;
+  }
   const hard = grid.at(p.pos.x, p.pos.z) + PILOT_CLEAR_HARD;
   if (p.pos.y < hard) {
     p.pos.y = hard;
@@ -849,9 +859,14 @@ export function stepPilot(
 }
 
 /** Lift `p` onto the hard floor without counting it (an ace handed back to
- * its pilot out of everyone's sight may be down in a canyon). */
+ * its pilot out of everyone's sight may be down in a canyon). T1: and onto
+ * the floor it is flying into, under PILOT_ALT_MAX — down a canyon of the
+ * taller edge, a face can stand a few metres ahead, past any climb. */
 export function settlePilot(p: Pilot, grid: RooflineGrid): void {
-  const hard = grid.at(p.pos.x, p.pos.z) + PILOT_CLEAR_HARD;
+  const hard = Math.max(
+    grid.at(p.pos.x, p.pos.z) + PILOT_CLEAR_HARD,
+    Math.min(PILOT_ALT_MAX, floorAhead(grid, p.pos, p.yaw, p.yaw, p.speed)),
+  );
   if (p.pos.y < hard) p.pos.y = hard;
   p.steer = p.yaw;
   p.steerNeed = 0;

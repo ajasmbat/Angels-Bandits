@@ -8,6 +8,7 @@
 
 import {
   type Building,
+  CUT_RUBBLE,
   CUT_STEEL,
   CityDamage,
   type TierGrid,
@@ -57,6 +58,7 @@ import {
   COLLAPSE_SHEET_THICK,
   COLLAPSE_SLAB_STOREY,
   COLLAPSE_SYMMETRY,
+  COLLAPSE_TOPPLE_MAX_SPAN,
   STREET_WIDTH,
 } from "@angels-bandits/common/constants";
 import { describe, expect, it } from "vitest";
@@ -81,6 +83,11 @@ const TALL = SEED_CITY.map((b, i) => [b, i] as const)
   .filter(([b]) => !b.holes && grid0(b).ny >= 3)
   .sort((a, b) => b[0].height - a[0].height)
   .map(([, i]) => i);
+/** T1: ...of them, the ones short enough to topple (a supertall's section,
+ * over COLLAPSE_TOPPLE_MAX_SPAN, always pancakes). */
+const TOPPLERS = TALL.filter(
+  (i) => (SEED_CITY[i] as Building).height <= COLLAPSE_TOPPLE_MAX_SPAN,
+);
 
 /** A building whose whole tier-0 band `band` is shot away, settled. */
 function cutBand(
@@ -110,6 +117,8 @@ function shearCase(): {
     const s = SEED_CITY[index] as Building;
     const g = tierGrids(s)[0];
     if (!g || s.holes || tierGrids(s).length !== 1) continue;
+    // T1: a wing a supertall's height pancakes; only a shorter one shears.
+    if (s.height > COLLAPSE_TOPPLE_MAX_SPAN) continue;
     if (g.nx < 4 || g.ny < 4 || g.nz < 3) continue;
     const { city, damage } = freshCity();
     const b = city[index] as Building;
@@ -143,7 +152,7 @@ describe("D10 structural failure: which way a building goes", () => {
   });
 
   it("a band shot away mid-height pancakes from there: the wire carries the failure height", () => {
-    const index = TALL[0] as number;
+    const index = TOPPLERS[0] as number;
     const g = grid0(SEED_CITY[index] as Building);
     const band = Math.floor(g.ny / 2);
     const { b } = cutBand(index, band);
@@ -183,7 +192,11 @@ describe("D10 structural failure: which way a building goes", () => {
     // the street past the face it sheared off.
     const c = buildCollapse(city, wireOf(shear, index));
     if (!c) throw new Error("no debris");
-    const stump = solids(b).filter((s) => s.baseY < b.height);
+    // What still stands — not the rubble piles its broken base left on the
+    // street (T1: this seed's case has some where its wing lands).
+    const stump = solids(b).filter(
+      (s) => s.baseY < b.height && s.cut !== CUT_RUBBLE,
+    );
     const pose = blankPose();
     for (let i = 0; i < c.n; i++) {
       for (let t = 0; t <= c.endMs; t += 50) {
@@ -330,7 +343,8 @@ describe("D10 progressive collapse: a creep, then a crush front", () => {
   });
 
   it("the tallest tower comes down in 8–14 s, pancaked or toppled; beats stay within the cap", () => {
-    const index = TALL[0] as number;
+    // T1: the tallest that can still topple (a supertall only pancakes).
+    const index = TOPPLERS[0] as number;
     const { city } = freshCity();
     const b = city[index] as Building;
     for (const style of [PANCAKE, TOPPLE] as const) {
@@ -360,7 +374,7 @@ describe("D10 progressive collapse: a creep, then a crush front", () => {
   });
 
   it("a topple bends as it swings: its top breaks off first, its base at the D3 angle", () => {
-    const index = TALL[0] as number;
+    const index = TOPPLERS[0] as number;
     const { city, b } = cutBand(index, 0);
     const plan = demolitionPlan(b, index, TOPPLE, DIR_POS_X);
     if (!plan) throw new Error("no plan");

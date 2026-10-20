@@ -13,7 +13,8 @@
 // 500 m cell grid, so every corner of the map is struck once per 16 strikes —
 // no clusters, no quiet corners (ST2's reveal pings sweep the whole city).
 // A strike whose cell contains one of the four landmark supertalls snaps to
-// that tower's roof: the supertalls (400–480 m) are the city's lightning rods.
+// that tower's roof: the supertalls (T1: 720–1000 m, their roofs up in the
+// deck) are the city's lightning rods.
 
 import { LANDMARK_BLOCKS, mulberry32 } from "./city/index";
 import {

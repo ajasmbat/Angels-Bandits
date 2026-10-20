@@ -39,6 +39,11 @@ import {
   type FleetPlan,
   type FleetShip,
   type LaneBreak,
+  MOOR_SWAY_BOB,
+  MOOR_SWING,
+  PATH_LINE,
+  PATH_MOOR,
+  PATH_ORBIT,
   SHIP_REACH,
   type ShipReach,
   fleetPoseInto64,
@@ -188,20 +193,88 @@ interface Seen {
   brk: LaneBreak | null;
 }
 
+/** One solid of the world as a plan box: what it is, its canonical centre,
+ * its half extents, its band and — for a crane or a prop — the break that
+ * smashes it. */
+type SolidVisit = (
+  what: string,
+  x: number,
+  z: number,
+  hx: number,
+  hz: number,
+  y0: number,
+  y1: number,
+  brk: LaneBreak | null,
+) => void;
+
+/** Every solid of `world` — building solids and roof structures as
+ * generated, statics, cranes (their whole reach, at any slew) and props —
+ * as plan boxes. `alongX` sets the axis a break's `s` and `half` run on. */
+function forEachSolid(
+  world: FleetWorld,
+  alongX: boolean,
+  visit: SolidVisit,
+): void {
+  // As generated: the plan is fitted to the city before any of it breaks
+  // (damage only ever takes solids away), so both sides fit the same one
+  // whenever they build it.
+  world.buildings.forEach((b, i) => {
+    for (const sb of baseSolids(b)) {
+      visit(
+        `building ${i}`,
+        b.x + sb.dx,
+        b.z + sb.dz,
+        sb.width / 2,
+        sb.depth / 2,
+        sb.baseY,
+        sb.baseY + sb.height,
+        null,
+      );
+    }
+    for (const r of generatedRoof(b) ?? []) {
+      visit(
+        `roof ${i} ${r.kind}`,
+        b.x + r.dx,
+        b.z + r.dz,
+        r.width / 2,
+        r.depth / 2,
+        r.baseY,
+        r.baseY + r.height,
+        null,
+      );
+    }
+  });
+  for (const st of world.statics ?? []) {
+    visit("static", st.x, st.z, st.hx, st.hz, st.y0, st.y1, null);
+  }
+  for (const site of world.cranes ?? []) {
+    // Everything the crane can swing — jib, counter-jib, trolley cable,
+    // hook — lies inside this cylinder round its mast, at any slew.
+    const r = craneReach(site);
+    const brk: LaneBreak = {
+      kind: "crane",
+      id: site.id,
+      s: wrapCoord(alongX ? site.x : site.z),
+      half: r,
+    };
+    visit(`crane ${site.id}`, site.x, site.z, r, r, 0, craneTop(site), brk);
+  }
+  for (const p of world.props ?? []) {
+    const brk: LaneBreak = {
+      kind: "prop",
+      id: p.id,
+      s: wrapCoord(alongX ? p.x : p.z),
+      half: alongX ? p.hx : p.hz,
+    };
+    visit(`prop ${p.id}`, p.x, p.z, p.hx, p.hz, p.y - p.hy, p.y + p.hy, brk);
+  }
+}
+
 /** Every solid within `reach` across of the lane's line. */
 function seenBy(f: Frame, world: FleetWorld, reach: number): Seen[] {
   const out: Seen[] = [];
   const cross = f.ln.cross;
-  const add = (
-    what: string,
-    x: number,
-    z: number,
-    hx: number,
-    hz: number,
-    y0: number,
-    y1: number,
-    brk: LaneBreak | null = null,
-  ): void => {
+  forEachSolid(world, f.alongX, (what, x, z, hx, hz, y0, y1, brk) => {
     const c = f.alongX ? z : x;
     const hc = f.alongX ? hz : hx;
     const gap = Math.max(0, Math.abs(wrapDeltaAxis(cross, c)) - hc);
@@ -215,58 +288,7 @@ function seenBy(f: Frame, world: FleetWorld, reach: number): Seen[] {
       y1,
       brk,
     });
-  };
-  // As generated: the plan is fitted to the city before any of it breaks
-  // (damage only ever takes solids away), so both sides fit the same one
-  // whenever they build it.
-  world.buildings.forEach((b, i) => {
-    for (const sb of baseSolids(b)) {
-      add(
-        `building ${i}`,
-        b.x + sb.dx,
-        b.z + sb.dz,
-        sb.width / 2,
-        sb.depth / 2,
-        sb.baseY,
-        sb.baseY + sb.height,
-      );
-    }
-    for (const r of generatedRoof(b) ?? []) {
-      add(
-        `roof ${i} ${r.kind}`,
-        b.x + r.dx,
-        b.z + r.dz,
-        r.width / 2,
-        r.depth / 2,
-        r.baseY,
-        r.baseY + r.height,
-      );
-    }
   });
-  for (const s of world.statics ?? []) {
-    add("static", s.x, s.z, s.hx, s.hz, s.y0, s.y1);
-  }
-  for (const site of world.cranes ?? []) {
-    // Everything the crane can swing — jib, counter-jib, trolley cable,
-    // hook — lies inside this cylinder round its mast, at any slew.
-    const r = craneReach(site);
-    const brk: LaneBreak = {
-      kind: "crane",
-      id: site.id,
-      s: wrapCoord(f.alongX ? site.x : site.z),
-      half: r,
-    };
-    add(`crane ${site.id}`, site.x, site.z, r, r, 0, craneTop(site), brk);
-  }
-  for (const p of world.props ?? []) {
-    const brk: LaneBreak = {
-      kind: "prop",
-      id: p.id,
-      s: wrapCoord(f.alongX ? p.x : p.z),
-      half: f.alongX ? p.hx : p.hz,
-    };
-    add(`prop ${p.id}`, p.x, p.z, p.hx, p.hz, p.y - p.hy, p.y + p.hy, brk);
-  }
   return out;
 }
 
@@ -289,10 +311,12 @@ const routeBand = (r: AircraftRoute): [number, number] => {
 /**
  * K1: lane `lane` against `world` — its rooftop profile (null for a street
  * lane), its planned break-throughs, what it cannot clear, and how much it
- * clears everything else by. Pure.
+ * clears everything else by. Pure. T1: an orbit or a berth is checked
+ * round its tower (towerClearance).
  */
 export function laneClearance(lane: number, world: FleetWorld): LaneClearance {
   const f = frameOf(lane);
+  if (f.ly.path !== PATH_LINE) return towerClearance(f, world);
   const { ln, ly, reach } = f;
   const len = ly.length;
   const across = reach.z + LANE_MARGIN_XZ;
@@ -394,6 +418,77 @@ export function laneClearance(lane: number, world: FleetWorld): LaneClearance {
 
   breaks.sort((a, b) => a.s - b.s || a.id - b.id);
   return { alt, breaks, conflicts, clearance };
+}
+
+/**
+ * T1: an orbit or a berth against `world`. Neither ever smashes anything (a
+ * crane or a prop in its reach is a conflict like any solid), and both fly
+ * one altitude (a berth ± its bob):
+ *  - an orbit sweeps an annulus round its tower: the hull's beam reaches no
+ *    nearer the centre than r − its half-beam, its bow and stern no further
+ *    than √((r + half-beam)² + half-length²); a solid conflicts when its
+ *    plan box's distances from the centre meet that annulus and its band
+ *    meets the hull's;
+ *  - a berth holds one plan rectangle, grown by its sway (MOOR_SWING of its
+ *    half-length at the ends);
+ * and the aircraft routes, a line each, are checked against the same
+ * footprint, the news heli by altitude alone.
+ */
+function towerClearance(f: Frame, world: FleetWorld): LaneClearance {
+  const { ln, ly, reach } = f;
+  const conflicts: LaneConflict[] = [];
+  let clearance = Number.POSITIVE_INFINITY;
+  const bob = ly.path === PATH_MOOR ? MOOR_SWAY_BOB : 0;
+  const lo = ln.alt - reach.y - bob;
+  const hi = ln.alt + reach.y + bob;
+  const orbit = ly.path === PATH_ORBIT;
+  const rIn = ln.r - reach.z;
+  const rOut = Math.hypot(ln.r + reach.z, reach.x);
+  // A berth's footprint, world axes: along its heading (x for yaw 0).
+  const sx = Math.abs(Math.cos(ln.yaw));
+  const sz = Math.abs(Math.sin(ln.yaw));
+  const swing = reach.x * MOOR_SWING;
+  const ex = reach.x * sx + reach.z * sz + swing;
+  const ez = reach.x * sz + reach.z * sx + swing;
+  /** Plan gap from the hull's footprint to a box (≤ 0: they overlap). */
+  const planGap = (x: number, z: number, hx: number, hz: number): number => {
+    const dx = Math.abs(wrapDeltaAxis(ln.cx, x));
+    const dz = Math.abs(wrapDeltaAxis(ln.cz, z));
+    if (!orbit) return Math.max(dx - hx - ex, dz - hz - ez);
+    const near = Math.hypot(Math.max(0, dx - hx), Math.max(0, dz - hz));
+    const far = Math.hypot(dx + hx, dz + hz);
+    return Math.max(rIn - far, near - rOut);
+  };
+  forEachSolid(world, true, (what, x, z, hx, hz, y0, y1) => {
+    const gap = planGap(x, z, hx, hz);
+    if (gap > 400) return;
+    const vgap = Math.max(y0 - hi, lo - y1);
+    if (gap < LANE_MARGIN_XZ && vgap < LANE_MARGIN_Y) {
+      conflicts.push({ what, s: 0, y0, y1 });
+    }
+    clearance = Math.min(clearance, Math.max(vgap, gap));
+  });
+  // The aircraft: a route is a line along its axis, at its band.
+  for (const r of world.aircraft ?? []) {
+    const [y0, y1] = routeBand(r);
+    const vgap = Math.max(y0 - hi, lo - y1);
+    const off = Math.abs(
+      wrapDeltaAxis(r.axis === "x" ? ln.cz : ln.cx, r.cross),
+    );
+    const half = orbit ? rOut : r.axis === "x" ? ez : ex;
+    const hgap = off - r.hz - half;
+    if (vgap < LANE_MARGIN_Y && hgap < LANE_MARGIN_XZ) {
+      conflicts.push({ what: `${r.kind} ${r.id}`, s: 0, y0, y1 });
+    }
+    clearance = Math.min(clearance, Math.max(vgap, hgap));
+  }
+  // The news heli roams anywhere over the city: altitude alone.
+  const newsBelly = NEWS_HELI_ALT_MIN - (HELI_HULL[1] as number);
+  if (hi > newsBelly - LANE_MARGIN_Y) {
+    conflicts.push({ what: "news heli", s: 0, y0: newsBelly, y1: newsBelly });
+  }
+  clearance = Math.min(clearance, newsBelly - hi);
+  return { alt: null, breaks: [], conflicts, clearance };
 }
 
 const profileMax = (p: Float64Array | null, fallback: number): number => {

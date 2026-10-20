@@ -27,7 +27,10 @@
 //
 // K1: the lowered deck brings the heli down to the landmark spires' height,
 // so the server only takes a story whose whole route keeps clear of them
-// (newsRouteClear); the idle orbit is chosen clear the same way.
+// (newsRouteClear); the idle orbit is chosen clear the same way. T1: the
+// cores' supertalls rise into its band too — a room's heli is kept off
+// every tower of its city (newsSpiresOf), so stories down in the cores'
+// canyons go uncovered.
 //
 // All horizontal math goes through wrapDeltaAxis, so a site across the seam
 // is reached the short way round.
@@ -46,7 +49,7 @@ import {
   WORLD_SIZE,
 } from "../constants";
 import { canonicalize, wrapDeltaAxis } from "../world/index";
-import { mulberry32 } from "./index";
+import { type Building, mulberry32 } from "./index";
 import { landmarkProfile } from "./landmarks";
 import { LANDMARK_BLOCKS } from "./layout";
 import type { MoverBox } from "./movers";
@@ -248,8 +251,12 @@ const altitudeFor = (t: number): number =>
  * Before anyone has died: an idle orbit over a seeded block centre, issued at
  * t = 0 and starting ON the circle, so it is simply orbiting at every time.
  * K1: a block whose orbit would meet a spire is passed over for the next.
+ * T1: `spires` is the room city's (newsSpiresOf).
  */
-export function newsHeliIdle(seed: number): NewsHeliTarget {
+export function newsHeliIdle(
+  seed: number,
+  spires: readonly NewsSpire[] = NEWS_SPIRES,
+): NewsHeliTarget {
   const rand = mulberry32((seed ^ 0x4e455753) >>> 0);
   const blocks = WORLD_SIZE / BLOCK_PITCH;
   let x = (Math.floor(rand() * blocks) + 0.5) * BLOCK_PITCH;
@@ -261,7 +268,11 @@ export function newsHeliIdle(seed: number): NewsHeliTarget {
     const fx = canonicalize({ x: cx + NEWS_HELI_ORBIT_R, y: 0, z: cz }).x;
     return { x: cx, y, z: cz, t: 0, fx, fy: y, fz: cz, fyaw: yawOf(0, 1) };
   };
-  for (let n = 0; n < blocks * blocks && !newsRouteClear(at(x, z)); n++) {
+  for (
+    let n = 0;
+    n < blocks * blocks && !newsRouteClear(at(x, z), spires);
+    n++
+  ) {
     x = (x + BLOCK_PITCH) % WORLD_SIZE;
     if (x < BLOCK_PITCH) z = (z + BLOCK_PITCH) % WORLD_SIZE;
   }
@@ -274,37 +285,77 @@ export function newsHeliIdle(seed: number): NewsHeliTarget {
  * its band, m: its hull's half-length and a margin. */
 export const NEWS_SPIRE_GAP = HELI_HULL[0] + 12;
 
-/** K1: the landmark spires as the heli's band sees them — the only things
- * that reach it under the lowered deck: each one's centre and the plan
- * radius (half-diagonal) of its widest tier reaching over the heli's
- * lowest belly. Pure in the fixed landmark layout. */
-export const NEWS_SPIRES: readonly { x: number; z: number; r: number }[] =
-  LANDMARK_BLOCKS.map(([bx, bz], i) => {
-    const belly = NEWS_HELI_ALT_MIN - HELI_HULL[1];
-    let base = 0;
-    let r = 0;
-    for (const t of landmarkProfile(i).tiers) {
-      if (base + t.height > belly) {
-        r = Math.max(r, Math.hypot(t.width, t.depth) / 2);
-      }
-      base += t.height;
+/** A tower as the heli's band sees it: its centre and a plan radius. */
+export interface NewsSpire {
+  x: number;
+  z: number;
+  r: number;
+}
+
+/** The plan radius (half-diagonal) of the widest of `tiers` (stacked from
+ * the ground, each centred) reaching over the heli's lowest belly, or 0. */
+function spireReach(
+  tiers: readonly { width: number; depth: number; height: number }[],
+): number {
+  const belly = NEWS_HELI_ALT_MIN - HELI_HULL[1];
+  let base = 0;
+  let r = 0;
+  for (const t of tiers) {
+    if (base + t.height > belly) {
+      r = Math.max(r, Math.hypot(t.width, t.depth) / 2);
     }
-    return {
-      x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
-      z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
-      r,
-    };
-  }).filter((s) => s.r > 0);
+    base += t.height;
+  }
+  return r;
+}
+
+/** K1: the landmark spires as the heli's band sees them: each one's centre
+ * and the plan radius (half-diagonal) of its widest tier reaching over the
+ * heli's lowest belly. Pure in the fixed landmark layout. T1: the cores'
+ * supertalls reach the band too — newsSpiresOf a city is what a room's
+ * heli is kept off; these are the default for callers without one. */
+export const NEWS_SPIRES: readonly NewsSpire[] = LANDMARK_BLOCKS.map(
+  ([bx, bz], i) => ({
+    x: bx * BLOCK_PITCH + BLOCK_PITCH / 2,
+    z: bz * BLOCK_PITCH + BLOCK_PITCH / 2,
+    r: spireReach(landmarkProfile(i).tiers),
+  }),
+).filter((s) => s.r > 0);
+
+/** T1: every building of `buildings` (as generated: a broken tower is only
+ * ever smaller) that reaches the heli's band, roof structures included —
+ * the landmarks and the cores' supertalls. Pure. */
+export function newsSpiresOf(buildings: readonly Building[]): NewsSpire[] {
+  const out: NewsSpire[] = [];
+  const belly = NEWS_HELI_ALT_MIN - HELI_HULL[1];
+  for (const b of buildings) {
+    let r = spireReach(b.tiers);
+    // Only its roof structures reach: they stand on the top tier.
+    const top = b.tiers[b.tiers.length - 1];
+    if (
+      r === 0 &&
+      top &&
+      (b.roof ?? []).some((s) => s.baseY + s.height > belly)
+    ) {
+      r = Math.hypot(top.width, top.depth) / 2;
+    }
+    if (r > 0) out.push({ x: b.x, z: b.z, r });
+  }
+  return out;
+}
 
 /**
  * K1: does the route `target` sets — the transit (or the spiral out) and
  * the orbit — keep NEWS_SPIRE_GAP off every spire? The server only sends
  * the heli on a story whose route does; one that would meet a spire is
- * not taken. Pure.
+ * not taken. Pure. T1: `spires` is the room city's (newsSpiresOf).
  */
-export function newsRouteClear(target: NewsHeliTarget): boolean {
+export function newsRouteClear(
+  target: NewsHeliTarget,
+  spires: readonly NewsSpire[] = NEWS_SPIRES,
+): boolean {
   const r = routeOf(target);
-  for (const sp of NEWS_SPIRES) {
+  for (const sp of spires) {
     const reach = sp.r + NEWS_SPIRE_GAP;
     // The spire relative to the orbit centre.
     const sx = wrapDeltaAxis(target.x, sp.x);
@@ -327,8 +378,11 @@ export function newsRouteClear(target: NewsHeliTarget): boolean {
 }
 
 /** A fresh slot for a seed: the idle orbit, no previous route. */
-export const newsHeliSlot = (seed: number): NewsHeliSlot => ({
-  target: newsHeliIdle(seed),
+export const newsHeliSlot = (
+  seed: number,
+  spires: readonly NewsSpire[] = NEWS_SPIRES,
+): NewsHeliSlot => ({
+  target: newsHeliIdle(seed, spires),
   prev: null,
 });
 

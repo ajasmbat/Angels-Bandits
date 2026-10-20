@@ -169,7 +169,17 @@ describe("P1 sweepImpact", () => {
     const fresh = freshCity();
     const dmg = new CityDamage();
     dmg.bind(fresh);
-    const imp = intoFacade(b, 70);
+    // Mid-band, so the body meets one chunk first, not the two either side
+    // of a floor seam (T1: seed 42's first tower has one at 60 m).
+    const g = tierGrids(b)[0] as TierGrid;
+    const o = intoFacade(b, 70);
+    const imp = {
+      ...o,
+      origin: {
+        ...o.origin,
+        y: g.baseY + (Math.floor(o.origin.y / g.ch) + 0.5) * g.ch,
+      },
+    };
     const before = sweepImpact(imp, fresh);
     const first = before.chunks[0] as number;
     expect(dmg.destroyChunk(first)).toBe(true);

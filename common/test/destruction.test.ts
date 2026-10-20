@@ -43,6 +43,7 @@ import {
   CITY_SEED,
   DESTROY_CAP,
   DESTROY_CAP_D2,
+  DESTRUCTION_CHUNK_BUDGET,
   HOLE_CORRIDOR_MARGIN,
   RUBBLE_REACH,
   WORLD_SIZE,
@@ -77,8 +78,10 @@ const inBox = (p: Vec3, b: LocalBox) =>
 function chew(buildings: Building[], share: number, seed: number): CityDamage {
   const dmg = new CityDamage();
   dmg.bind(buildings);
-  // A heavily chewed fixture: D2's 25 % cap, not C2's tighter live one.
-  dmg.setCap(DESTROY_CAP_D2);
+  // A heavily chewed fixture: D2's 25 % cap, not C2's tighter live one —
+  // of the whole city (T1: the caps are shares of capBasis, which the
+  // supertall city's chunks outnumber).
+  dmg.setCap((DESTROY_CAP_D2 * dmg.chunkCount) / dmg.capBasis);
   const rand = mulberry32(seed);
   buildings.forEach((b, i) => {
     for (const id of chunksOf(b, i)) if (rand() < share) dmg.destroyChunk(id);
@@ -106,10 +109,11 @@ describe("D2 chunk grid", () => {
         total++;
       }
     });
-    // The planner's count for the seed city (38,445 cells; hole air
-    // removed). H1's taller skyline: was 26,731.
-    expect(total).toBeGreaterThan(37745);
-    expect(total).toBeLessThanOrEqual(38445);
+    // The planner's count for the seed city (70,616 cells; hole air
+    // removed). H1's taller skyline: was 26,731; T1's supertalls: was
+    // 38,445 (now DESTRUCTION_CHUNK_BUDGET, what the caps count).
+    expect(total).toBeGreaterThan(69916);
+    expect(total).toBeLessThanOrEqual(70616);
   });
 
   it("tiles every tier exactly: cells sum to the tier volume, never overlap", () => {
@@ -442,7 +446,11 @@ describe("D2 damage", () => {
     const d = new CityDamage();
     d.bind(c);
     const all = c.flatMap((b, i) => chunksOf(b, i));
-    const limit = Math.floor(d.chunkCount * DESTROY_CAP);
+    // T1: a share of the cap basis — the city's chunks, at most
+    // DESTRUCTION_CHUNK_BUDGET (the supertall city has more).
+    expect(d.capBasis).toBe(Math.min(d.chunkCount, DESTRUCTION_CHUNK_BUDGET));
+    expect(d.chunkCount).toBeGreaterThan(DESTRUCTION_CHUNK_BUDGET);
+    const limit = Math.floor(d.capBasis * DESTROY_CAP);
     for (const id of all.slice(0, limit)) expect(d.destroyChunk(id)).toBe(true);
     const next = all[limit] as number;
     expect(d.destroyChunk(next)).toBe(false);

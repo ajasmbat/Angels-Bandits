@@ -655,10 +655,10 @@ export class DestructionDirector {
     return out;
   }
 
-  /** (destroyed + fallen) / chunks of the room's city. */
+  /** (destroyed + fallen) / chunks of the room's city (T1: its capBasis). */
   private goneShare(world: DestructionWorld): number {
     const d = world.city.damage;
-    return (d.destroyedCount + d.fallenCount) / Math.max(1, d.chunkCount);
+    return (d.destroyedCount + d.fallenCount) / Math.max(1, d.capBasis);
   }
 
   private fire(e: DirectorEvent, world: DestructionWorld): FiredEvent | null {

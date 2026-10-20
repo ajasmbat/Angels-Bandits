@@ -16,7 +16,7 @@
 // hole, and off the centre of the tallest towers (searchlight stations).
 // Landmarks carry nothing: their beacon and crown are the read.
 
-import { LANDMARK_HEIGHT, WORLD_SIZE } from "../constants";
+import { CLOUD_BASE, LANDMARK_HEIGHT, WORLD_SIZE } from "../constants";
 import type { Building } from "./index";
 import { mulberry32 } from "./rng";
 
@@ -96,14 +96,20 @@ export const BILLBOARD_LEG = 0.3;
  * map's middle; every non-landmark at least AA_FLAK_MIN_HEIGHT tall carries
  * a heavy flak gun instead. H1: 200 → 280 m, the top of the downtown cores'
  * band — with the taller skyline that keeps the city's flak and nest
- * counts where W3 tuned them (seed 42: 4 flak of 41 nests, was 4 of 40). */
+ * counts where W3 tuned them (seed 42: 4 flak of 41 nests, was 4 of 40).
+ * T1: the cores' supertalls rise through the deck, so no roof over
+ * AA_NEST_MAX_HEIGHT carries a gun (it could see nothing from inside the
+ * cloud, and nothing can strafe it there), and the flak floor rises to
+ * 340 m, the cores' towers just under the deck (seed 42: 4 flak of 39). */
 export const AA_NEST_RADIUS = 2.5;
 export const AA_NEST_HEIGHT = 2.8;
 export const AA_FLAK_RADIUS = 3.2;
 export const AA_FLAK_HEIGHT = 3.6;
 export const AA_NEST_MIN_HEIGHT = 30;
 export const AA_NEST_MIN_ROOF = 16;
-export const AA_FLAK_MIN_HEIGHT = 280;
+export const AA_FLAK_MIN_HEIGHT = 340;
+/** T1: the highest roof that carries a nest, m — 40 m under the deck. */
+export const AA_NEST_MAX_HEIGHT = CLOUD_BASE - 40;
 /** A light nest's chance at the anchor, falling linearly by AA_NEST_FALLOFF
  * of itself at the torus' farthest point from it (wrap distance). */
 export const AA_NEST_CHANCE = 0.15;
@@ -429,7 +435,9 @@ function aaNestFor(
   iw: number,
   id: number,
 ): RoofStructure | null {
-  if (b.height < AA_NEST_MIN_HEIGHT) return null;
+  if (b.height < AA_NEST_MIN_HEIGHT || b.height > AA_NEST_MAX_HEIGHT) {
+    return null;
+  }
   const top = b.tiers[b.tiers.length - 1];
   if (!top || Math.min(top.width, top.depth) < AA_NEST_MIN_ROOF) return null;
   const rand = mulberry32(

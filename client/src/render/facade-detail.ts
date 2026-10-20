@@ -57,6 +57,13 @@ export const MAX_PROTRUSION = 1.5;
 export const DETAIL_MIN_Y = 5.6;
 /** Headroom kept under each tier top — the parapet lip overhangs the facade. */
 const TOP_CLEAR = 0.5;
+/** T1: the per-floor detail — fire escapes, balconies, AC units — climbs no
+ * higher than this, m: the ring's brick and office towers stand 100–265 m
+ * now (most were under 120), and up their whole faces they put a camera
+ * window ~60 % over its instance budget; under 80 m (~22 storeys, the
+ * street's view) they keep it (seed 42: worst window ~21.8k of 24k), their
+ * upper floors plain windows. */
+const DETAIL_MAX_Y = 80;
 /** A side needs this much tier-1 sidewalk to count as street frontage. */
 const MIN_FACE_CLEARANCE = 1.2;
 /** Gap kept around every sign panel, meters. */
@@ -431,7 +438,9 @@ function fireEscape(f: Face, rand: () => number, out: DetailBox[]): boolean {
   // Landings on floor lines: the lowest leaves room for the drop ladder, the
   // highest keeps its railing under the parapet.
   const kStart = Math.max(1, Math.ceil((DETAIL_MIN_Y + 1 - f.base) / f.py));
-  const kEnd = Math.floor((f.top - TOP_CLEAR - RAIL_HEIGHT - f.base) / f.py);
+  const kEnd = Math.floor(
+    (Math.min(f.top - TOP_CLEAR, DETAIL_MAX_Y) - RAIL_HEIGHT - f.base) / f.py,
+  );
   if (kEnd - kStart < 1) return false;
   const yOf = (k: number) => f.base + k * f.py;
   const width = ESCAPE_BAYS * f.px;
@@ -664,7 +673,7 @@ function balconies(
     const along = bayCenter(f, n);
     for (let k = 1; ; k++) {
       const y = f.base + k * f.py;
-      if (y + BALCONY_RAIL > f.top - TOP_CLEAR) break;
+      if (y + BALCONY_RAIL > Math.min(f.top - TOP_CLEAR, DETAIL_MAX_Y)) break;
       if (y < BALCONY_MIN_Y) continue;
       const rect = {
         a0: along - width / 2,
@@ -735,7 +744,7 @@ function acUnits(
   for (let k = 0; ; k++) {
     const sill = f.base + (k + f.sill) * f.py;
     const top = sill - AC_SILL_GAP;
-    if (top > f.top - TOP_CLEAR) break;
+    if (top > Math.min(f.top - TOP_CLEAR, DETAIL_MAX_Y)) break;
     if (top - AC_HEIGHT < DETAIL_MIN_Y) continue;
     for (let n = f.nMin; n <= f.nMax; n++) {
       if (rand() >= chance) continue;

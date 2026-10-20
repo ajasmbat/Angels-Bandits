@@ -109,11 +109,22 @@ describe("cornerSpeed — open air and walls ahead", () => {
     expect(cornerSpeed(f, empty)).toBe(MAX_SPEED);
     expect(cornerSpeed(f, empty, 1)).toBe(MAX_SPEED);
     expect(cornerSpeed(f, empty, -1)).toBe(MAX_SPEED);
-    // Above every roof of the real city too (tallest landmark 250 m).
+    // Above every roof of the real city too — T1: every roof of the ring;
+    // the cores' supertalls and the landmarks rise past 420 m, so a point
+    // within a brake horizon (and a turn) of one is left out.
+    const high = buildings.filter((b) => b.height + 16 >= 400);
+    let open = 0;
     for (let i = 0; i < 40; i++) {
-      const g = at({ x: i * 49, y: 420, z: (i * 131) % WORLD_SIZE }, i);
-      expect(cornerSpeed(g, city, 1, T)).toBe(MAX_SPEED);
+      const p = { x: i * 49, y: 420, z: (i * 131) % WORLD_SIZE };
+      const near = high.some((b) => {
+        const d = wrapDelta(p, b);
+        return Math.hypot(d.x, d.z) < 300 + Math.hypot(b.width, b.depth) / 2;
+      });
+      if (near) continue;
+      open++;
+      expect(cornerSpeed(at(p, i), city, 1, T)).toBe(MAX_SPEED);
     }
+    expect(open).toBeGreaterThan(10);
   });
 
   it("a wall beyond the brake-first horizon costs nothing, even head-on", () => {

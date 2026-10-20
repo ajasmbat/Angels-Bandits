@@ -35,52 +35,52 @@ const OUT = resolve(
 const PORT = Number(opt("port", 8243));
 
 /**
- * A shot: the tower (seed-42 index, the closed-form gallery's 294 m tower
- * 157, so the two read side by side), the trigger and its options, the
+ * A shot: the tower (seed-42 index, the closed-form gallery's 293 m tower
+ * 159, so the two read side by side), the trigger and its options, the
  * camera (canonical eye and look-at — the closed-form views' own where they
  * have one), the instants to save (ms after the event) and a strip of
  * instants; `settled`: one frame once it is all at rest instead.
  */
 const SHOTS = {
   "collapse-pancake-mid": {
-    tower: 157,
+    tower: 159,
     k: "pancake",
-    eye: [524, 140, 88],
-    look: [659, 92, 249],
+    eye: [850, 140, 200],
+    look: [741, 92, 270],
     at: [4600],
     strip: [-600, 2000, 3500, 4600, 6000, 8000, 12000],
   },
   "collapse-lean-hinge": {
-    tower: 157,
-    // DS1's Lean trigger: floor 2 blown out on its west side.
+    tower: 159,
+    // DS1's Lean trigger: floor 2 blown out on its +x side.
     k: "lean",
-    opts: { floor: 2, dir: 0 },
-    eye: [524, 140, 88],
-    look: [659, 92, 249],
+    opts: { floor: 2, dir: 1 },
+    eye: [850, 140, 200],
+    look: [741, 92, 270],
     at: [4000],
     strip: [-600, 1500, 3000, 4500, 6500, 9000, 14000],
   },
   "collapse-topple-impact": {
-    tower: 157,
+    tower: 159,
     k: "topple",
-    opts: { dir: 0 },
-    eye: [586, 180, 100],
-    look: [586, 123, 250],
+    opts: { dir: 1 },
+    eye: [814, 180, 121],
+    look: [814, 123, 271],
     at: [5100],
     strip: [-600, 1500, 3000, 4500, 6500, 9000, 14000],
   },
   "ruin-detail": {
-    tower: 157,
+    tower: 159,
     k: "pancake",
-    eye: [597, 14, 280],
-    look: [652, 6, 249],
+    eye: [803, 14, 301],
+    look: [748, 6, 270],
     settled: true,
   },
   "rubble-heap": {
-    tower: 157,
+    tower: 159,
     k: "pancake",
-    eye: [590, 48, 320],
-    look: [655, 4, 252],
+    eye: [812, 48, 340],
+    look: [746, 4, 272],
     settled: true,
   },
 };

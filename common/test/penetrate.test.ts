@@ -11,6 +11,7 @@ import {
   CityDamage,
   type TierGrid,
   chunkBuilding,
+  chunkCell,
   chunkTier,
   generateCity,
   makeBuilding,
@@ -27,7 +28,6 @@ import {
   SWEEP_END_ENERGY,
   SWEEP_END_GROUND,
   SWEEP_END_NONE,
-  SWEEP_LANDMARK_HARDNESS,
   SWEEP_MAX_DIST,
   SWEEP_STEP_M,
   chunkCentre,
@@ -40,11 +40,8 @@ import {
   sweepRecord,
   sweepSpeedAt,
 } from "@angels-bandits/common/city/penetrate";
-import {
-  CITY_SEED,
-  LANDMARK_HEIGHT,
-  WORLD_SIZE,
-} from "@angels-bandits/common/constants";
+import { bayResistance } from "@angels-bandits/common/city/structure";
+import { CITY_SEED, WORLD_SIZE } from "@angels-bandits/common/constants";
 import { wrapDistance } from "@angels-bandits/common/world";
 import { describe, expect, it } from "vitest";
 
@@ -103,13 +100,15 @@ describe("P1 sweepImpact", () => {
       expect(sweepSpeedAt(res, res.stopT)).toBe(0);
       expect(res.knots.at(-1)).toBeCloseTo(0, 6);
       // Every chunk it broke was paid for out of ½·m·v².
-      const e0 = 0.5 * imp.mass * 80 * 80;
+      const v = imp.velocity;
+      const e0 = 0.5 * imp.mass * (v.x * v.x + v.y * v.y + v.z * v.z);
       let spent = 0;
       for (const id of res.chunks) {
         const t = city[chunkBuilding(id)] as Building;
         const g = tierGrids(t)[chunkTier(id)] as TierGrid;
-        const hard = t.height >= LANDMARK_HEIGHT ? SWEEP_LANDMARK_HARDNESS : 1;
-        spent += g.cw * g.ch * g.cd * SWEEP_COST_PER_M3 * hard;
+        // DS1: a bay costs what its frame resists (landmark hardness in it).
+        const resist = bayResistance(t, chunkTier(id), chunkCell(id));
+        spent += g.cw * g.ch * g.cd * SWEEP_COST_PER_M3 * resist;
         expect(chunkCentre(city, id, { x: 0, y: 0, z: 0 })).not.toBeNull();
       }
       expect(spent).toBeLessThanOrEqual(e0 + 1e-6);

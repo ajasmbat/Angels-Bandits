@@ -37,6 +37,13 @@
 // itself for the room's `impact` message — the clients replay the same
 // sweep for the body ploughing on and a burst per chunk.
 //
+// DS1: and with physics. A room built with a PhysicsHost (the solo sim
+// worker's; never the Node shell's) plans with the structural frame (floors
+// fail by their columns) and hands every building collapse to the Rapier
+// world (./debris-physics.ts) before falling back to the closed form — far
+// from the camera, over the body budget, or a crane. Its contacts replace
+// collapseImpacts as the chain impacts, and each tick steps it to `now`.
+//
 // DL1: and how. The room city carries a DestructionTuning (`tuning`) — the
 // planner's, the chain probe's and the chain blasts' numbers — which is
 // DEFAULT_DESTRUCTION_TUNING in every room but a Destruction Lab. A lab
@@ -142,6 +149,7 @@ import {
 } from "@angels-bandits/common/destruction-tuning";
 import type { Quat } from "@angels-bandits/common/protocol";
 import { type Vec3, wrapDeltaAxis } from "@angels-bandits/common/world";
+import type { PhysicsHost } from "./physics-port";
 
 /**
  * A breakable copy of `buildings`: new Building objects in the same order
@@ -197,6 +205,20 @@ export interface RoomCity {
   /** P1: impact records swept since the room last sent them (its
    * `impact` message, just before the tick's `chunks`). */
   sweepsOut: ImpactRecord[];
+  /** DS1: the room's debris physics (setRoomPhysics; null: every collapse
+   * is the closed form — multiplayer). */
+  physics: PhysicsHost | null;
+}
+
+/** DS1: give `city` debris physics — its collapses are simulated (where
+ * the physics takes them) and its field poses them from the frames. */
+export function setRoomPhysics(
+  city: RoomCity,
+  physics: PhysicsHost | null,
+): void {
+  city.physics?.dispose();
+  city.physics = physics;
+  city.collapses.attachPhysics(physics?.registry ?? null);
 }
 
 /** P1: one thing a sweep lands later: a chunk of its tunnel (`chunk` ≥ 0)
@@ -378,6 +400,7 @@ export function createRoomCity(
     lab: false,
     sweeps: [],
     sweepsOut: [],
+    physics: null,
   };
 }
 
@@ -395,6 +418,7 @@ export function resetRoomCity(city: RoomCity): void {
   city.lastStructuralAt.clear();
   city.sweeps = [];
   city.sweepsOut = [];
+  city.physics?.reset();
   const props = city.props;
   props.slot.state.reset([]);
   props.blasts = [];
@@ -685,7 +709,13 @@ export function tickDestruction(
     if (!b) continue;
     const depth = city.chainDepth.get(index) ?? 0;
     city.chainDepth.delete(index);
-    for (const plan of planCollapses(b, index, city.tuning)) {
+    // DS1: a physics room's floors fail by their columns.
+    for (const plan of planCollapses(
+      b,
+      index,
+      city.tuning,
+      city.physics !== null,
+    )) {
       collapses.push(
         stageCollapse(
           city,
@@ -696,6 +726,18 @@ export function tickDestruction(
           depth,
         ),
       );
+    }
+  }
+  // DS1: the debris world to now; what it struck lands from next tick.
+  const physics = city.physics;
+  if (physics) {
+    physics.step(now);
+    const hits = physics.takeImpacts();
+    if (hits.length > 0) {
+      for (const i of hits) {
+        city.impacts.push({ ...i, by: city.collapseBy.get(i.source) ?? null });
+      }
+      city.impacts.sort((a, b) => a.t - b.t);
     }
   }
   const props = city.props.out;
@@ -739,6 +781,9 @@ export function recordCollapse(
       });
     }
   }
+  // DS1: the physics takes it (its contacts are the chain impacts) — or
+  // the closed form's probe finds where its debris drives in.
+  if (c && city.physics?.add(c, depth)) return;
   if (!c || depth >= city.tuning.chainDepthMax) return;
   for (const i of collapseImpacts(c, city.buildings, city.tuning)) {
     city.impacts.push({ ...i, source: wire.id, depth, by });
@@ -855,6 +900,7 @@ function forgetRecords(city: RoomCity, ids: readonly number[]): void {
   for (const id of ids) {
     city.collapseBy.delete(id);
     city.collapseDepth.delete(id);
+    city.physics?.remove(id);
   }
   city.impacts = city.impacts.filter((i) => !gone.has(i.source));
 }

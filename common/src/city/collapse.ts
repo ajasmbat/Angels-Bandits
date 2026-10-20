@@ -105,7 +105,17 @@ import type { Building } from "./index";
 // movers.ts ↔ collapse.ts is a module cycle (collideMovers reads the field;
 // a crane fall reads the crane's boxes). Every use is at call time.
 import { type CraneSite, craneBoxesAt, slewAngle } from "./movers";
+import type { PhysPoses, PhysRegistry } from "./physpose";
+import { sphereHitsHeap } from "./physpose";
 import { mulberry32 } from "./rng";
+import {
+  MAT_CONCRETE,
+  MAT_STEEL,
+  buildingFrame,
+  failingFloor,
+  floorLoad,
+  leanDir,
+} from "./structure";
 
 export const PANCAKE = 0;
 export const TOPPLE = 1;
@@ -172,6 +182,11 @@ export interface CollapsePlan {
 /** DL1: the tuning the planner / builder / chain probe in progress reads
  * (set for the duration of the exported call; they never yield). */
 let T: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING;
+
+/** DS1: the planner in progress plans a PHYSICS room — floors fail by
+ * their columns (city/structure.ts), not by D3's band rule (set for the
+ * call's duration, like `T`). */
+let STRUCT = false;
 
 /** Run `fn` with `tuning` as `T`, restoring the previous one after (so a
  * nested call — a builder inside a planner — sees its own). */
@@ -624,7 +639,9 @@ function nextPlan(
 ): CollapsePlan | null {
   const grids = tierGrids(b);
   const masks = chunkMask(b);
-  const fail = failingBand(grids, masks, standing);
+  const fail = STRUCT
+    ? failingFloor(b, standing, T.columnStrength)
+    : failingBand(grids, masks, standing);
   let set: number[] = [];
   let style: CollapseStyle = PANCAKE;
   let dir = 0;
@@ -637,13 +654,23 @@ function nextPlan(
     });
     const g = grids[fail.tier] as TierGrid;
     const span = spanOf(grids, set);
-    ({ style, dir } = styleOf(
-      g,
-      masks[fail.tier] as Uint8Array,
-      standing[fail.tier] as Uint8Array,
-      fail.band,
-      set.length > 0 ? span.top - span.base : 0,
-    ));
+    const height = set.length > 0 ? span.top - span.base : 0;
+    if (STRUCT) {
+      // DS1: where the columns failed — the survivors' centroid off to one
+      // side leans the section over them, centred it pancakes.
+      const load = floorLoad(buildingFrame(b), standing, fail.tier, fail.band);
+      const d = leanDir(load, g, toppleThreshold(g, height));
+      style = d < 0 ? PANCAKE : TOPPLE;
+      dir = d < 0 ? 0 : d;
+    } else {
+      ({ style, dir } = styleOf(
+        g,
+        masks[fail.tier] as Uint8Array,
+        standing[fail.tier] as Uint8Array,
+        fail.band,
+        height,
+      ));
+    }
   } else {
     set = unsupported(b, standing);
     if (set.length === 0) return null;
@@ -673,9 +700,23 @@ export function planCollapses(
   b: Building,
   index: number,
   tuning: Readonly<DestructionTuning> = DEFAULT_DESTRUCTION_TUNING,
+  /** DS1: a physics room — floors fail by their columns
+   * (tuning.columnStrength), and where they failed picks the style. */
+  structural = false,
 ): CollapsePlan[] {
   if (tuning !== T)
-    return withTuning(tuning, () => planCollapses(b, index, tuning));
+    return withTuning(tuning, () =>
+      planCollapses(b, index, tuning, structural),
+    );
+  if (structural !== STRUCT) {
+    const prev = STRUCT;
+    STRUCT = structural;
+    try {
+      return planCollapses(b, index, tuning, structural);
+    } finally {
+      STRUCT = prev;
+    }
+  }
   const standing = standingOf(b);
   const plans: CollapsePlan[] = [];
   // Each plan removes at least one chunk, so this ends; the bound is a
@@ -868,6 +909,10 @@ export interface Collapse {
   /** D10: the volume a rep piece stands for (its whole chunk solid, or
    * itself), m³; 0 on the rest. */
   readonly vol: Float64Array;
+  /** DS1: each piece's material (city/structure.ts MAT_*): a slab's
+   * concrete, a column's steel, a sheet's facade (glass, masonry, office) —
+   * the physics' density, and DS2's per-piece look. */
+  readonly mat: Uint8Array;
   /** Standing pose: centre and half extents. */
   readonly ox: Float64Array;
   readonly oy: Float64Array;
@@ -951,6 +996,11 @@ export interface Collapse {
    * boxes, for the per-event reject. */
   readonly bounds: LocalBox;
   readonly restBounds: LocalBox;
+  /** DS1: the physics' poses when a physics room simulates this collapse
+   * (city/physpose.ts) — then every pose and collision reads them instead
+   * of the closed form above; null for an analytic collapse (multiplayer,
+   * a far one, one over the body budget, a crane). */
+  phys: PhysPoses | null;
 }
 
 /** One piece's pose. x/z relative to the collapse's building centre. */
@@ -965,6 +1015,13 @@ export interface PiecePose {
   phi: number;
   /** Fully at rest (a static rubble box). */
   rest: boolean;
+  /** DS1: a physics pose — the box is rotated by the unit quaternion
+   * (qx, qy, qz, qw), not by `phi` about `axis`. */
+  quat: boolean;
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
 }
 
 export const blankPose = (): PiecePose => ({
@@ -977,6 +1034,11 @@ export const blankPose = (): PiecePose => ({
   axis: 0,
   phi: 0,
   rest: false,
+  quat: false,
+  qx: 0,
+  qy: 0,
+  qz: 0,
+  qw: 1,
 });
 
 const HALF_PI = Math.PI / 2;
@@ -1130,8 +1192,16 @@ export function posePieceNow(
   return poseNow(c, i, out);
 }
 
+/** DS1: server ms from which collapse `c` lies still for good — its
+ * closed-form end, or a physics collapse's final frame (+∞ until then). */
+export const collapseSettledAt = (c: Collapse): number =>
+  c.phys !== null ? c.phys.settledAt : c.t0 + c.endMs;
+
 /** piecePose at `poseClock.tMs`. */
 function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
+  // DS1: a physics collapse poses from its frames (and a crane never is).
+  if (c.phys !== null) return c.phys.pose(c, i, poseClock.tMs, out);
+  out.quat = false;
   const tau = (poseClock.tMs - c.t0) / 1000 - (c.start[i] as number);
   const land = c.land[i] as number;
   out.axis = c.axis[i] as number;
@@ -1190,6 +1260,7 @@ function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
 
 /** Piece `i`'s rest pose (an oriented box), into `out`. */
 function restPose(c: Collapse, i: number, out: PiecePose): PiecePose {
+  out.quat = false;
   out.x = c.rx[i] as number;
   out.y = c.ry[i] as number;
   out.z = c.rz[i] as number;
@@ -1342,6 +1413,8 @@ interface RawPiece {
   vol: number;
   sub: number;
   face: number;
+  /** DS1: MAT_* (city/structure.ts). */
+  mat: number;
 }
 
 /** CUT_* bit of each DIR_* face (−x, +x, −z, +z) and of its opposite. */
@@ -1367,6 +1440,8 @@ function fracture(
   out: RawPiece[],
 ): void {
   let cut = solidCut;
+  // DS1: a sheet is the building's facade, a slab its concrete.
+  const facade = buildingFrame(b).material;
   const rand = streamOf(chunk, solid, 0x0d10);
   const sheetRoll = rand();
   const faceRoll = rand();
@@ -1427,6 +1502,7 @@ function fracture(
         vol: (box.x1 - box.x0) * (box.y1 - box.y0) * (box.z1 - box.z0),
         sub: 0,
         face,
+        mat: facade,
       };
       // What the sheet came off now shows the gutted storeys there.
       cut |= FACE_CUT[face] as number;
@@ -1459,6 +1535,7 @@ function fracture(
       vol: j === mid ? vol : 0,
       sub: sub++,
       face: -1,
+      mat: MAT_CONCRETE,
     });
   }
   if (sheet) {
@@ -1500,6 +1577,7 @@ function fracture(
       vol: 0,
       sub: sub++,
       face: -1,
+      mat: MAT_STEEL,
     });
   }
 }
@@ -1699,6 +1777,7 @@ function assembleCollapse(
     mode: new Uint8Array(n),
     rep: Uint8Array.from(raw, (p) => p.rep),
     vol: Float64Array.from(raw, (p) => p.vol),
+    mat: Uint8Array.from(raw, (p) => p.mat),
     ox: Float64Array.from(raw, (p) => p.x),
     oy: Float64Array.from(raw, (p) => p.y),
     oz: Float64Array.from(raw, (p) => p.z),
@@ -1755,6 +1834,7 @@ function assembleCollapse(
     leadMs: T.leadMs,
     bounds: { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 },
     restBounds: { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 },
+    phys: null,
   };
   const lead = T.leadMs / 1000;
   const G = T.gravity;
@@ -2393,6 +2473,7 @@ export function buildCraneCollapse(
           (axis === 2 ? seg : hz),
         sub: raw.length,
         face: -1,
+        mat: MAT_STEEL,
       });
     }
   }
@@ -2568,6 +2649,7 @@ export function collapseImpacts(
 /** What a collapse collision reports. Allocated only on a hit. */
 export interface CollapseHit {
   collapse: Collapse;
+  /** The piece hit, or (DS1) −1 for the collapse's rubble heap. */
   piece: number;
   /** The piece was still moving (or about to): falling debris, not rubble. */
   falling: boolean;
@@ -2584,11 +2666,24 @@ export function sphereHitsPiece(
   dz: number,
   radius: number,
 ): boolean {
-  // Into the piece's frame: rotate by −phi about its axis.
+  // Into the piece's frame: rotate by −phi about its axis (DS1: or by the
+  // physics pose's conjugate quaternion).
   let lx = dx;
   let ly = dy;
   let lz = dz;
-  if (p.phi !== 0) {
+  if (p.quat) {
+    // v' = q* v q: t = 2 (−q⃗ × v); v' = v + w t + (−q⃗) × t.
+    const qx = -p.qx;
+    const qy = -p.qy;
+    const qz = -p.qz;
+    const qw = p.qw;
+    const tx = 2 * (qy * dz - qz * dy);
+    const ty = 2 * (qz * dx - qx * dz);
+    const tz = 2 * (qx * dy - qy * dx);
+    lx = dx + qw * tx + (qy * tz - qz * ty);
+    ly = dy + qw * ty + (qz * tx - qx * tz);
+    lz = dz + qw * tz + (qx * ty - qy * tx);
+  } else if (p.phi !== 0) {
     const cs = Math.cos(p.phi);
     const sn = Math.sin(p.phi);
     if (p.axis === 0) {
@@ -2656,6 +2751,29 @@ export function collideCollapses(
     const c = list[e] as Collapse;
     const dx = wrapDeltaAxis(c.x, pos.x);
     const dz = wrapDeltaAxis(c.z, pos.z);
+    // DS1: a physics collapse — its frames at this clock, and its heap.
+    const phys = c.phys;
+    if (phys !== null) {
+      if (phys.heap && sphereHitsHeap(phys.heap, dx, pos.y, dz, radius)) {
+        if (!fallingOnly) return { collapse: c, piece: -1, falling: false };
+      }
+      if (outside(phys.bounds, dx, pos.y, dz, radius + phys.reach)) continue;
+      poseClock.tMs = tMs;
+      for (let i = 0; i < c.n; i++) {
+        const p = poseNow(c, i, scratchPose);
+        if (fallingOnly && p.rest) continue;
+        const bound =
+          Math.sqrt(p.hx * p.hx + p.hy * p.hy + p.hz * p.hz) + radius;
+        const ox = dx - p.x;
+        const oy = pos.y - p.y;
+        const oz = dz - p.z;
+        if (ox * ox + oy * oy + oz * oz > bound * bound) continue;
+        if (sphereHitsPiece(p, ox, oy, oz, radius)) {
+          return { collapse: c, piece: i, falling: !p.rest };
+        }
+      }
+      continue;
+    }
     if (tMs >= c.t0 + c.endMs) {
       if (fallingOnly || outside(c.restBounds, dx, pos.y, dz, radius)) continue;
       for (let i = 0; i < c.n; i++) {
@@ -2753,6 +2871,21 @@ export class CollapseField {
   readonly felled = new Map<number, number>();
   /** Bumped on every change. */
   version = 0;
+  /** DS1: the room's physics poses (a physics room only): every building
+   * collapse it knows poses from it (Collapse.phys). */
+  private physics: PhysRegistry | null = null;
+
+  /** DS1: pose this field's collapses from `registry` as its frames come. */
+  attachPhysics(registry: PhysRegistry | null): void {
+    this.physics = registry;
+    registry?.bind(this.list);
+    this.version++;
+  }
+
+  /** The physics registry attached, if any. */
+  get physicsRegistry(): PhysRegistry | null {
+    return this.physics;
+  }
 
   /** Attach to the city the records name; builds every held record. */
   bind(buildings: readonly Building[]): void {
@@ -2780,7 +2913,10 @@ export class CollapseField {
     this.noteFelled(wire);
     if (!this.buildings) return null;
     const c = this.build(wire);
-    if (c) this.list.push(c);
+    if (c) {
+      this.list.push(c);
+      this.physics?.attach(c);
+    }
     return c;
   }
 
@@ -2817,7 +2953,10 @@ export class CollapseField {
     this.wires.push(...keep);
     for (let k = this.list.length - 1; k >= 0; k--) {
       const c = this.list[k] as Collapse;
-      if (c.kind === kind && c.building === target) this.list.splice(k, 1);
+      if (c.kind === kind && c.building === target) {
+        this.list.splice(k, 1);
+        if (kind === KIND_BUILDING) this.physics?.drop(c.id, c.building);
+      }
     }
     if (kind === KIND_CRANE) this.felled.delete(target);
     this.version++;
@@ -2828,7 +2967,10 @@ export class CollapseField {
     this.list.length = 0;
     for (const w of this.wires) {
       const c = this.build(w);
-      if (c) this.list.push(c);
+      if (c) {
+        this.list.push(c);
+        this.physics?.attach(c);
+      }
     }
     this.version++;
   }

@@ -857,6 +857,16 @@ export const COLLAPSE_FLOOR_EVENTS_MAX = 12;
  * spent, ms (the first always runs; the rest wait a tick). */
 export const COLLAPSE_BUILD_BUDGET_MS = 20;
 
+// --- DS1 physical destruction (city/structure.ts, server/src/debris-physics.ts) ---
+/** A floor fails when fewer than this share of its columns stand (the
+ * planner of a physics room; city/structure.ts failingFloor). */
+export const DS1_COLUMN_STRENGTH = 0.6;
+/** Debris friction (Coulomb, the Rapier world's colliders). */
+export const DS1_FRICTION = 0.8;
+/** A falling section breaks apart into its pre-fractured pieces when it
+ * strikes something faster than this, m/s (relative speed at contact). */
+export const DS1_FRACTURE_SPEED = 6;
+
 // --- D5 chain reactions (city/collapse.ts collapseImpacts) ---
 /** Falling debris that enters another building blasts its chunks there:
  * at most this many impacts per collapse, this many per struck building,

@@ -519,6 +519,10 @@ export function hingeLine(
 
 // --- Resistance (P1) ------------------------------------------------------------
 
+/** A landmark's steel frame costs this much more to break through (P1's
+ * SWEEP_LANDMARK_HARDNESS). */
+export const LANDMARK_HARDNESS = 1.6;
+
 const resistCache = new WeakMap<Building, Float32Array[]>();
 
 /**
@@ -543,7 +547,7 @@ const RESIST_NORM = 0.961;
 
 function resistOf(b: Building): Float32Array[] {
   const frame = buildingFrame(b);
-  const hard = b.height >= LANDMARK_HEIGHT ? 1.6 : 1;
+  const hard = b.height >= LANDMARK_HEIGHT ? LANDMARK_HARDNESS : 1;
   return frame.tiers.map((tf) => {
     const g = tf.grid;
     const out = new Float32Array(g.nx * g.ny * g.nz).fill(1);

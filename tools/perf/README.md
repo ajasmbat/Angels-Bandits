@@ -3164,7 +3164,7 @@ heap pose — each bay's storey slab a seeded broken plate, tilted to the
 slope it lies on, the upper storeys out down the flanks and a few in the
 street, the lower ones buried — in a mound of fine rubble slumped to a
 seeded angle of repose (30–40°, `common/src/city/repose.ts`; its run-out
-held to one street). The physics' settle raises its heap by the same rule.
+held to the near side of its street). The physics' settle raises its heap by the same rule.
 Both heaps rise as their pile comes to rest and are drawn and collided at
 the same share. `ruin-detail`, staged, on the runner (SwiftShader, High,
 ratio 1): **2 683 519 → 2 680 587 triangles** — the mound (4 m cells, ~3k

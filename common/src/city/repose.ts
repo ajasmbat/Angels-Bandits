@@ -118,9 +118,10 @@ export function pileBox(
   }
 }
 
-/** How far a heap runs out past its pile, at most, m: it fills its street,
- * it does not cross into the next block. */
-export const HEAP_RUN_MAX_M = STREET_WIDTH;
+/** How far a heap runs out past its pile, at most, m: a skirt over the
+ * near side of its street — never across it, and the far side stays open
+ * (the street-level views, and the planes down there). */
+export const HEAP_RUN_MAX_M = 0.6 * STREET_WIDTH;
 
 /** The run-out of a heap whose crest is `crest` (m) at `slope`, m. */
 export const reposeRun = (crest: number, slope: number): number =>

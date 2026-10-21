@@ -420,6 +420,10 @@ import { AtmosphereFx } from "./render/atmosphere-fx";
 import { landBeam } from "./render/beam-landing";
 import { Birds } from "./render/birds";
 import { FleetRenderer } from "./render/boss";
+import {
+  BROKEN_DETAIL_UNIFORM,
+  ROOM_FLICKER_UNIFORM,
+} from "./render/broken-shading";
 import { CaveInRenderer } from "./render/caveins";
 import { CityRenderer } from "./render/city";
 import { PICKUP_TAXIS } from "./render/citylife";
@@ -432,6 +436,7 @@ import {
   creepSeconds,
 } from "./render/collapse-fx";
 import { ConstructionSparks } from "./render/construction";
+import { CRACK_GROWTH_UNIFORM, DAMAGE_ON_UNIFORM } from "./render/damage-map";
 import {
   ALARM_TAIL_MS as DIRECTOR_ALARM_TAIL_MS,
   DirectorFx,
@@ -592,7 +597,11 @@ import { TunnelShafts } from "./render/tunnel-shafts";
 import { TunnelRenderer } from "./render/tunnels";
 import { UndergroundLife } from "./render/underground";
 import { WeatherClock, setWeatherUniform } from "./render/weather";
-import { buildingSeed, isWindowLit } from "./render/window-pattern";
+import {
+  WIN_INTERIOR_UNIFORM,
+  buildingSeed,
+  isWindowLit,
+} from "./render/window-pattern";
 import { nearestImage, nearestImageInto } from "./render/wrapPlacement";
 import { Wrecks } from "./render/wrecks";
 import {
@@ -4140,6 +4149,18 @@ declare global {
       /** O6 QA: draw everything except these systems (flicker attribution;
        * `[]` restores all). Returns the names it matched. */
       qaHide: (names: string[]) => string[];
+      /** G8 QA: pin one of the building shader's shared switches (a
+       * number) or put it back (null) — per-feature GPU A/B in one page.
+       * Returns its value before. */
+      qaShaderSwitch: (
+        name:
+          | "winInterior"
+          | "brokenDetail"
+          | "roomFlicker"
+          | "damageOn"
+          | "crackGrowth",
+        value: number | null,
+      ) => number;
       /** D1 QA: up to `max` pane centres on a tier's facade face that the JS
        * lit mirror reports LIT, nearest the face's middle first — canonical,
        * nudged 0.5 m off the wall — with their cells. */
@@ -4470,6 +4491,16 @@ const QA_POST = [
   "post:glare",
   "post:reflections",
 ] as const;
+/** G8 QA (`__ab.qaShaderSwitch`): the building shader's shared switches,
+ * and each one's value before QA pinned it. */
+const QA_SHADER_SWITCHES = {
+  winInterior: WIN_INTERIOR_UNIFORM,
+  brokenDetail: BROKEN_DETAIL_UNIFORM,
+  roomFlicker: ROOM_FLICKER_UNIFORM,
+  damageOn: DAMAGE_ON_UNIFORM,
+  crackGrowth: CRACK_GROWTH_UNIFORM,
+};
+const qaSwitchKept = new Map<string, number>();
 /** Post effects `qaHide` holds off (applyQaPost, every frame). */
 const qaPostOff = new Set<string>();
 /** uReflOn as it was before `post:reflections` was hidden. */
@@ -5623,6 +5654,19 @@ window.__ab = {
     impacts.points.visible = !hidden && impacts.liveCount > 0;
   },
   qaSystems: () => qaSystems().map((s) => s.name),
+  qaShaderSwitch: (name, value) => {
+    const u = QA_SHADER_SWITCHES[name];
+    const before = u.value;
+    if (value === null) {
+      const kept = qaSwitchKept.get(name);
+      if (kept !== undefined) u.value = kept;
+      qaSwitchKept.delete(name);
+    } else {
+      if (!qaSwitchKept.has(name)) qaSwitchKept.set(name, u.value);
+      u.value = value;
+    }
+    return before;
+  },
   qaHide: (names) => {
     // Off every camera layer, not `visible = false`: several systems drive
     // their own visibility each frame and would quietly undo it. Each

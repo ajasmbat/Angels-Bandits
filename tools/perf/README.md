@@ -3155,3 +3155,69 @@ Two more findings for whoever profiles on the M3:
 - `tools/destruction-bench.ts` failed on main (`dust.update` 2.9 KB a
   frame, 6.3 KB in all): the surge's roll-out and street snap went through
   non-inlined calls per puff per frame. 3.5 KB in all now.
+
+## G9: rubble heaps, and the sim worker's messages on the main thread
+
+**The heap.** A pancake no longer rests as a cake of storey slabs: its
+pieces land on the stack as before, then slide (`Collapse.slide`) to a
+heap pose — each bay's storey slab a seeded broken plate, tilted to the
+slope it lies on, the upper storeys out down the flanks and a few in the
+street, the lower ones buried — in a mound of fine rubble slumped to a
+seeded angle of repose (30–40°, `common/src/city/repose.ts`; its run-out
+held to one street). The physics' settle raises its heap by the same rule.
+Both heaps rise as their pile comes to rest and are drawn and collided at
+the same share. `ruin-detail`, staged, on the runner (SwiftShader, High,
+ratio 1): **2 683 519 → 2 680 587 triangles** — the mound (4 m cells, ~3k
+triangles) and its dressing are paid for by the column stubs of the lower
+half of a pancake, which end buried (1668 → 1611 pieces).
+
+**`gallery.mjs` reads a steady window.** After a view is staged and shot
+it resets the meter, waits `AB_GALLERY_STEADY_MS` (3000) and prints
+`steady <view> {p50,p95,p99,mean,frames,triangles}` next to `shot` — the
+staging stall (`qaDestruction` blocks 56–137 ms) is outside it, and
+`triangles` is the staged frame's (`shot` is read after the teardown). On a
+software rasteriser a frame takes seconds, so the window holds 0–2 frames:
+read it on the M3.
+
+**Where the sim worker's messages go on the main thread.**
+`tools/perf/sim-messages.mjs` plays the solo game, holds a gallery view
+and records a trace: every worker message is a `HandlePostMessage` task,
+timed per kind on the page clock, with the GC inside them and the
+two-clock spike rows. `tools/sim-message-bench.ts` charges the page's own
+allocation per message (V8's sampling heap profiler, the destruction
+bench's method). On the runner:
+
+| cause | before | after |
+| --- | ---: | ---: |
+| page allocation per snapshot (61 planes, bench) | 34 174 B | 17 B |
+| page allocation per debris pose frame (1600 pieces) | 0 B | 0 B |
+| snapshot handling, live game, p50 / p95 / max | 0.1 / 0.4 / 1.4 ms | 0.1 / 0.3 / 0.4 ms |
+| main-thread GC, live game, 8 s | 88.8 ms in 10 | 78.1 ms in 6 |
+| `collapse` arrival (builds the debris), p50 of the 12 tallest pancakes | 26.9 ms | 31.9 ms |
+| `canyon-supertalls` (quiet city): `waves` + snapshot | 40 /s, p95 0.1 ms, no GC in 6 s | 40 /s, p95 0.1 ms, no GC in 5 s |
+
+The fix: the worker decodes each snapshot and posts it packed — one
+transferred `Float64Array` (`common/src/net.ts` `packSnapshot`, ids sent
+once per connection) — and `GameSocket` decodes it into objects it reuses;
+`InterpolationBuffer.push` copies into recycled samples; the link no
+longer copies its listener list per message; the socket's clock fields
+are plain doubles (a `number | null` field boxed a number per snapshot).
+At 20 Hz the JSON path was ~680 KB a second of young garbage from 61
+planes — the "GC from per-message allocation" suspect. Every buffer that
+crosses is transferred, never cloned: a frame's own bytes (a broadcast's
+are copied once in the worker, then transferred), the debris poses and
+heaps, the packed snapshot.
+
+What this runner cannot say: SwiftShader frames take 0.5–5 s here, so no
+16.7 → 33.3 ms pattern can show, and the quiet `canyon-supertalls` view's
+messages cost ~0.1 ms each on this CPU. The remaining main-thread stall
+from the worker is a `collapse` arriving (its debris is built on the page,
+tens of ms) — rare, a p99 cost, not one frame in six. The M3 steady
+windows decide whether the hitch is gone:
+
+```sh
+npm run build -w client
+node tools/perf/gallery.mjs out 8099 collapse-topple-impact,collapse-dust-street,ruin-detail,destruction-glass,canyon-supertalls
+node tools/perf/sim-messages.mjs --view canyon-supertalls --size 1280x720
+node --import tsx tools/sim-message-bench.ts --where
+```

@@ -3099,3 +3099,59 @@ self-governing budget let it run. Run it on an idle machine. On a shared,
 loaded box the governor holds fewer bodies, and the p99 is the box's.
 
     node --import tsx tools/physics-bench.ts [--tier=high] [--runs=3]
+
+## G8: streaky ruins and the destruction views' cost
+
+**The streaks** were the debris, not a texture. `ruin-detail` frames the
+closed-form pile of a pancaked 293 m tower: 1668 pieces, most of them
+storey slabs crushed to ~20 × 0.5 × 20 m, stacked 40 m high. Two things
+smeared them (`client/src/render/debris.ts`, `broken-shading.ts`):
+
+- the fracture face's projection axis was the nearest axis of its
+  UNIT-box normal; on a crushed slab a cut that looks diagonal in the unit
+  box faces almost straight up, so its pattern was held still for metres
+  along the slab (`patternAxis` now picks it from the metric normal, never
+  more than √3 out of true, `client/test/fracture-library.test.ts`);
+- the library's cuts are unit-box shares, so a gentle slant through the
+  thickness became a ramp ~6 m long and 0.5 m high — 80 of them stacked
+  were the long tapered wedges. A resting piece's cuts are held to
+  `REST_JAG_M` (soft, 1.2 m) in metres, and debris is flat-shaded (its
+  library normals no longer match the reshaped faces).
+
+The broken concrete is triplanar now (noise, aggregate, soot and embers,
+weights `|n|⁴` from the face's own derivative normal: an axis-aligned
+face takes one plane, so a standing box is unchanged), and a settled piece
+gets its own tone, dust on what faces up and a dark underside.
+
+**What the views cost.** SwiftShader's GPU timer on a shared box moved
+±10–30 % between identical passes, so per-system GPU ablation
+(`__ab.qaHide`, and `__ab.qaShaderSwitch` for the building shader's
+interior / crack / damage / room-flicker switches) was not repeatable
+enough to attribute the M3's drop. Two deterministic counters are:
+`__ab.perf().triangles` (instances × drawn range, every pass) and
+`__ab.destruction().dustFill` (the dust's summed sprite area, in frames).
+
+| view | triangles, main → G8 | draws | note |
+| --- | ---: | ---: | --- |
+| `airforce-swarm` | 3 752 726 → 2 002 726 | 89 → 90 | the fleet alone 2 215 936 → 402 052 |
+| `ruin-detail` | 1 732 369 → 1 796 313 | 92 → 92 | debris 200 100 of it |
+| `collapse-topple-impact` | 2 469 371 → 2 405 427 | 97 → 90 | |
+| `interior-exposed` | 2 700 349 → 2 695 455 | 98 → 98 | |
+
+The fleet's LOD draw packed three frames (biplane-mid, fighter-mid,
+fighter-far) into one 25 020-vertex geometry and every instance ran all of
+it — a far fighter needs 504. Each frame is its own draw over its own range
+of the shared buffers now (`fleet.ts` `frameRanges`): +1 draw while both
+mid and far fighters are up.
+
+Two more findings for whoever profiles on the M3:
+
+- `gallery.mjs`'s `shot` fps is the mean of the last 30 frames, and a
+  staged view shoots a few frames after staging: `qaDestruction` blocks
+  the page 56 ms (`ruin-detail`) to 137 ms (`collapse-topple-impact`) and
+  the next frame's JS runs 15–69 ms. At 16.7 ms a frame that alone reads
+  as ~44 fps for the topple. Read a steady window (`perfReset`, then
+  `perfStats`) before quoting a destruction view's fps.
+- `tools/destruction-bench.ts` failed on main (`dust.update` 2.9 KB a
+  frame, 6.3 KB in all): the surge's roll-out and street snap went through
+  non-inlined calls per puff per frame. 3.5 KB in all now.

@@ -104,11 +104,44 @@ const MORTAR = "vec3(0.36, 0.34, 0.3)";
 const GLASS_EDGE = "vec3(0.09, 0.15, 0.14)";
 /** Aggregate stone size, m; brick course and length, m. */
 const STONE_M = 0.045;
+/** The aggregate's mean far away (cement and its stones, 55 % stone), and
+ * its luminance — the rubble scales it to RUBBLE_ALBEDO. */
+const AGG_MEAN = "vec3(0.3028, 0.29, 0.2672)";
+const AGG_MEAN_LUM = 0.29;
+/** G8: how much of an up face's colour the settled dust takes, at most. */
+const RUBBLE_DUST_SHARE = "0.55";
+/** G8: how far a settled piece's tone strays from the pile's, ± share. */
+const PIECE_TONE = 0.3;
+/** G8: how dark a settled piece's down faces go (share of albedo). */
+const PILE_SHADE = "0.8";
 const COURSE_M = 0.075;
 const BRICK_M = 0.215;
 
+/** G8 triplanar: how sharply the three planar projections hand over by
+ * the face normal (weights |n|^TRI_SHARP, normalised). An axis-aligned face
+ * gets exactly one plane — a standing box's patterns are unchanged — and a
+ * tumbled debris face blends the planes it leans between, never stretched. */
+export const TRI_SHARP = 4;
+/** A plane whose weight is under this is skipped (its share is noise). */
+export const TRI_SKIP = 0.01;
+
+/** The triplanar weights (x plane, y plane, z plane) of normal `n`, the
+ * shader's abTriWeights in JS. */
+export function triplanarWeights(
+  n: readonly [number, number, number],
+): [number, number, number] {
+  const w = n.map((c) => Math.abs(c) ** TRI_SHARP) as [number, number, number];
+  const sum = w[0] + w[1] + w[2];
+  return [w[0] / sum, w[1] / sum, w[2] / sum];
+}
+
+/** Linear albedo of the dust settled on a pile's up faces (G8). */
+const RUBBLE_DUST = "vec3(0.36, 0.345, 0.32)";
+
 /** DS2: smooth value noise (the rubble's chunks, the soot) — G7's blocky
- * per-square hashes read as checkerboards on every ruin. */
+ * per-square hashes read as checkerboards on every ruin. G8: and its
+ * triplanar form, plus the fresh break's aggregate — stones in cement — in
+ * one plane and triplanar: the planes are (x: zy, y: xz, z: xy), brkW's. */
 export const BROKEN_PARS_GLSL = /* glsl */ `
 float abVNoise(vec2 p, float s) {
   vec2 bvI = floor(p);
@@ -118,6 +151,32 @@ float abVNoise(vec2 p, float s) {
     mix(abHash(bvI, s), abHash(bvI + vec2(1.0, 0.0), s), bvF.x),
     mix(abHash(bvI + vec2(0.0, 1.0), s), abHash(bvI + vec2(1.0, 1.0), s), bvF.x),
     bvF.y);
+}
+vec3 abTriWeights(vec3 n) {
+  vec3 twW = pow(abs(n), vec3(${TRI_SHARP.toFixed(1)}));
+  return twW / max(twW.x + twW.y + twW.z, 1e-6);
+}
+float abTriNoise(vec3 p, vec3 w, float s) {
+  float tnSum = 0.0;
+  float tnW = 0.0;
+  if (w.x > ${TRI_SKIP}) { tnSum += w.x * abVNoise(p.zy, s); tnW += w.x; }
+  if (w.y > ${TRI_SKIP}) { tnSum += w.y * abVNoise(p.xz, s); tnW += w.y; }
+  if (w.z > ${TRI_SKIP}) { tnSum += w.z * abVNoise(p.xy, s); tnW += w.z; }
+  return tnSum / max(tnW, 1e-6);
+}
+vec3 abAggregate(vec2 p, float s) {
+  vec2 agC = floor(p / ${STONE_M});
+  float agS = abHash(agC, s * 9.0);
+  float agIn = step(0.45, abHash(agC + 17.0, s * 5.0));
+  return mix(${CEMENT}, mix(${STONE_DARK}, ${STONE_LIGHT}, agS), agIn);
+}
+vec3 abTriAggregate(vec3 p, vec3 w, float s) {
+  vec3 taSum = vec3(0.0);
+  float taW = 0.0;
+  if (w.x > ${TRI_SKIP}) { taSum += w.x * abAggregate(p.zy, s); taW += w.x; }
+  if (w.y > ${TRI_SKIP}) { taSum += w.y * abAggregate(p.xz, s); taW += w.y; }
+  if (w.z > ${TRI_SKIP}) { taSum += w.z * abAggregate(p.xy, s); taW += w.z; }
+  return taSum / max(taW, 1e-6);
 }
 `;
 
@@ -242,6 +301,18 @@ const INTERIOR_GLSL = /* glsl */ `
 /** After the facade, roof and hole passes: repaint exposed faces/rubble. */
 export const BROKEN_COLOR_GLSL = /* glsl */ `
 // --- D2 exposed insides and rubble ---
+// G8 triplanar: the face's own normal in the pattern frame, and in the
+// world. A debris face's comes from its derivatives (a fracture cut faces
+// any way, and its faces are flat, so it is exact), taken here at the top
+// level — never in a branch; a standing box's is its axis.
+vec3 brkPN = vObjNormal;
+vec3 brkWN = vObjNormal;
+#ifdef AB_FRACTURE
+brkPN = normalize(cross(dFdx(vPatPos), dFdy(vPatPos)));
+brkWN = normalize(cross(dFdx(vBWorldPos), dFdy(vBWorldPos)));
+brkWN = dot(brkWN, cameraPosition - vBWorldPos) < 0.0 ? -brkWN : brkWN;
+#endif
+vec3 brkTW = abTriWeights(brkPN);
 float brkDmg = floor(vBroken.w / ${KIND_STRIDE});
 float brkEmber = 0.0;
 // D11: the exposed storey's room — burning, lit, how high in it, contents
@@ -266,12 +337,12 @@ if (brkDmg > 0.5) {
   // instance sits at its nearest torus image, like every other pattern).
   vec2 brkW = brkN.x > 0.5 ? vPatPos.zy : brkN.z > 0.5 ? vPatPos.xy : vPatPos.xz;
   float brkAA = max(wAA.x, wAA.y);
-  float brkNoise = mix(0.5, abVNoise(brkW * 1.7, vBSeed * 31.0), abDetail(0.6, brkAA));
+  float brkNoise = mix(0.5, abTriNoise(vPatPos * 1.7, brkTW, vBSeed * 31.0), abDetail(0.6, brkAA));
   if (brkDmg > 3.5) {
     // DS2 fracture face: the material's fresh break, by library class.
     float frCls = 0.0;
 #ifdef AB_FRACTURE
-    frCls = vFrClass;
+    frCls = vFrClass.x;
 #endif
     brkFresh = 1.0;
     if (frCls > 1.5) {
@@ -288,13 +359,10 @@ if (brkDmg > 0.5) {
       vec3 brBrick = ${BRICK} * (0.75 + 0.5 * brTone);
       diffuseColor.rgb = mix(brBrick, ${MORTAR}, mix(0.2, brJoint, abDetail(${COURSE_M}, brkAA))) * (0.85 + 0.3 * brkNoise);
     } else {
-      // Aggregate: stones in grey cement, their mean far away.
-      float agS = abHash(floor(brkW / ${STONE_M}), vBSeed * 9.0);
-      float agIn = step(0.45, abHash(floor(brkW / ${STONE_M}) + 17.0, vBSeed * 5.0));
-      vec3 agStone = mix(${STONE_DARK}, ${STONE_LIGHT}, agS);
-      vec3 agNear = mix(${CEMENT}, agStone, agIn);
-      vec3 agMean = mix(${CEMENT}, mix(${STONE_DARK}, ${STONE_LIGHT}, 0.5), 0.55);
-      diffuseColor.rgb = mix(agMean, agNear, abDetail(${STONE_M * 2}, brkAA)) * (0.78 + 0.4 * brkNoise);
+      // Aggregate: stones in grey cement (triplanar, G8), their mean far
+      // away.
+      vec3 agNear = abTriAggregate(vPatPos, brkTW, vBSeed);
+      diffuseColor.rgb = mix(${AGG_MEAN}, agNear, abDetail(${STONE_M * 2}, brkAA)) * (0.78 + 0.4 * brkNoise);
     }
   } else if (brkDmg > 2.5) {
     // D10 steel: a column or I-beam segment, rebar — dark, streaked rust.
@@ -302,10 +370,14 @@ if (brkDmg > 0.5) {
     diffuseColor.rgb = mix(${STEEL}, ${RUST}, smoothstep(0.35, 0.95, brkStreak)) * (0.8 + 0.4 * brkNoise);
   } else if (brkDmg > 1.5) {
     // Rubble: dusty broken concrete, with chunks of the facade's own finish
-    // (dusted over too) — hashed in the face's plane, O1.
+    // (dusted over too). G8: triplanar, so no face of a tumbled piece
+    // smears — clods of a few decimetres and the aggregate in them (their
+    // means far away) over the metre-scale chunks.
     brkRubble = 1.0;
-    float brkChunk = abVNoise(brkW * 1.3, vBSeed * 7.0);
-    vec3 brkConcrete = vec3(${RUBBLE_ALBEDO.toFixed(2)}) * (0.7 + 0.45 * brkNoise);
+    float brkChunk = abTriNoise(vPatPos * 1.3, brkTW, vBSeed * 7.0);
+    float brkClod = mix(0.5, abTriNoise(vPatPos * 4.0, brkTW, vBSeed * 23.0), abDetail(0.25, brkAA));
+    vec3 brkAgg = mix(${AGG_MEAN}, abTriAggregate(vPatPos, brkTW, vBSeed), abDetail(${STONE_M * 2}, brkAA));
+    vec3 brkConcrete = brkAgg * ${(RUBBLE_ALBEDO / AGG_MEAN_LUM).toFixed(3)} * (0.7 + 0.45 * brkNoise) * (0.75 + 0.5 * brkClod);
     vec3 brkFinish = mix(diffuseColor.rgb * 0.8, brkConcrete, 0.35);
     diffuseColor.rgb = mix(brkConcrete, brkFinish,
       mix(${RUBBLE_FINISH.toFixed(2)}, smoothstep(${(0.62 - 0.04).toFixed(2)}, ${(0.62 + 0.04).toFixed(2)}, brkChunk), abDetail(0.77, brkAA)));
@@ -381,8 +453,27 @@ ${INTERIOR_GLSL}
   // the stump's cut faces and the rubble alike.
   // DS2: smooth soot (G7's 2.2 m squares read as black boxes), and a
   // fresh break is cleaner than the faces that burned.
-  float brkSoot = mix(0.325, smoothstep(0.45, 0.8, abVNoise(brkW * 0.45, vBSeed * 5.0)), abDetail(2.2, brkAA));
+  float brkSoot = mix(0.325, smoothstep(0.45, 0.8, abTriNoise(vPatPos * 0.45, brkTW, vBSeed * 5.0)), abDetail(2.2, brkAA));
   diffuseColor.rgb *= 1.0 - mix(mix(${SOOT.toFixed(2)}, ${RUBBLE_SOOT.toFixed(2)}, brkRubble), ${FRESH_SOOT.toFixed(2)}, brkFresh) * brkSoot;
+  // G8: the collapse's dust settled on whatever faces up in a pile — the
+  // rubble's tops, and a resting piece's broken faces.
+  // Each piece its own: its concrete a shade lighter or darker and its
+  // dust thicker or thinner — a pile's slabs read one by one, not as one
+  // striped face.
+  float brkSettled = brkRubble;
+  float brkPiece = 0.5;
+#ifdef AB_FRACTURE
+  brkSettled = max(brkSettled, brkFresh * (1.0 - step(0.5, vFrLit.x)));
+  brkPiece = vFrClass.y;
+#endif
+  diffuseColor.rgb *= mix(1.0, ${(1 - PIECE_TONE).toFixed(2)} + ${(2 * PIECE_TONE).toFixed(2)} * brkPiece, brkSettled);
+  float brkDust = brkSettled * smoothstep(0.35, 0.85, brkWN.y) * (0.45 + 0.55 * brkNoise)
+    * (0.35 + fract(brkPiece * 7.31 + 0.13));
+  diffuseColor.rgb = mix(diffuseColor.rgb, ${RUBBLE_DUST}, min(0.85, ${RUBBLE_DUST_SHARE} * brkDust));
+  // A settled piece's underside lies on the pile (there is no AO pass):
+  // its down faces are the dark crevices between slabs, not sky-lit
+  // slivers.
+  diffuseColor.rgb *= 1.0 - ${PILE_SHADE} * brkSettled * smoothstep(0.15, 0.75, -brkWN.y);
 }
 `;
 

@@ -141,6 +141,15 @@ export const REBAR_MAX_M = 1.4;
 /** DS2: once a piece rests, its cuts are filled back this far toward its
  * box (a pile of thin crushed slabs, cut deep, is all dark slits). */
 export const REST_FILL = 0.55;
+/** G8: once a piece rests, how deep its cuts may bite, m (soft: a cut
+ * `m` deep in metres keeps REST_JAG_M · (1 − e^(−m / REST_JAG_M)) of it).
+ * The library's cuts are unit-box shares, and a pile's crushed slab is
+ * ~20 × 0.5 × 20 m: a torn edge that slants gently through the unit
+ * box's thickness became a ramp ~6 m long and half a metre high, and 80
+ * of them stacked were the long horizontal smears `ruin-detail` showed.
+ * Held in metres, a slab's edge is a torn band with bites of a metre or
+ * so and steep broken faces, however big the slab. */
+export const REST_JAG_M = 1.2;
 /** A broken steel member's cross-section share of its box, its twist at
  * the ends (rad, at most) and its bow (unit-box share, at most): the
  * rotated, bowed section stays inside the box. */
@@ -209,6 +218,46 @@ export function restFill(
   return [c[0] * k, c[1] * k, c[2] * k];
 }
 
+/**
+ * G8: the box axis the facade passes project a library face on (the
+ * shader's abFrN, in JS): the nearest axis of the face's METRIC normal —
+ * its unit-box normal `n` through the piece's scale `size`, i.e. n / size,
+ * the scale's inverse transpose. The unit-box normal's own nearest axis
+ * was wrong on every squashed piece: a rest slab is ~0.3 × 0.9 × 20 m, so a
+ * cut at 45° in the unit box faces almost straight up, and the side plane
+ * it was projected on held its pattern still for metres along the slab —
+ * the horizontal smears `ruin-detail` showed. By the metric normal a face
+ * is never projected more than √3 out of true.
+ */
+export function patternAxis(
+  n: readonly [number, number, number],
+  size: readonly [number, number, number],
+): number {
+  const ax = Math.abs(n[0] / Math.max(size[0], 1e-4));
+  const ay = Math.abs(n[1] / Math.max(size[1], 1e-4));
+  const az = Math.abs(n[2] / Math.max(size[2], 1e-4));
+  return ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+}
+
+/** G8: a resting piece's vertex `p` (centred, the piece's axes) with its
+ * cuts held to REST_JAG_M deep in metres, axis by axis (the shader's, in
+ * JS). Every point moves only toward the box face it is nearest along each
+ * axis, and never past it: still inside the box. */
+export function restJag(
+  p: readonly [number, number, number],
+  size: readonly [number, number, number],
+): [number, number, number] {
+  const out: [number, number, number] = [0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    const s = Math.max(size[k] as number, 1e-4);
+    const v = p[k] as number;
+    const inset = (0.5 - Math.abs(v)) * (size[k] as number);
+    const jag = REST_JAG_M * (1 - Math.exp(-inset / REST_JAG_M));
+    out[k] = (v >= 0 ? 1 : -1) * (0.5 - jag / s);
+  }
+  return out;
+}
+
 /** The steel's twist-and-bow of canonical point `c` (the shader's, in JS):
  * the section thinned to STEEL_THIN, turned by up to ±STEEL_TWIST from end
  * to end, bowed by up to STEEL_BOW in the middle. `h2`, `h3` in [0, 1). */
@@ -274,7 +323,7 @@ export function libraryVertex(
     ],
     axis,
   );
-  const p = permute(c, axis);
+  const p = rest && !steel ? restJag(permute(c, axis), size) : permute(c, axis);
   return [
     p[0] + (o[0] * REBAR_HALF) / Math.max(size[0], 1e-4),
     p[1] + 0.5 + (o[1] * REBAR_HALF) / Math.max(size[1], 1e-4),
@@ -362,10 +411,20 @@ void abFrInit() {
   vec3 frP = frAx == 1 ? frC : frAx == 0 ? frC.yzx : frC.zxy;
   vec3 frPN = frAx == 1 ? frN : frAx == 0 ? frN.yzx : frN.zxy;
   vec3 frPO = frAx == 1 ? frO : frAx == 0 ? frO.yzx : frO.zxy;
+  // G8: a resting piece's cuts bite at most ~REST_JAG_M deep, in metres
+  // (restJag, in JS; not steel, which keeps its own bend).
+  if (frRest > 0.5 && abFrClass < 2.5) {
+    vec3 frIn = (0.5 - abs(frP)) * frSize;
+    vec3 frJag = ${REST_JAG_M.toFixed(2)} * (1.0 - exp(-frIn / ${REST_JAG_M.toFixed(2)}));
+    frP = (step(0.0, frP) * 2.0 - 1.0) * (0.5 - frJag / max(frSize, vec3(1e-4)));
+  }
   abFrPos = frP + vec3(0.0, 0.5, 0.0) + frPO * ${REBAR_HALF.toFixed(2)} / max(frSize, vec3(1e-4));
   abFrTrueN = frPN;
-  // The facade passes want a box face's axis: the cut face's nearest.
-  vec3 frA = abs(frPN);
+  // The facade passes want a box face's axis: the cut face's nearest, by
+  // its METRIC normal (G8, patternAxis): a resting slab is ~0.3 × 0.9 × 20 m,
+  // so a cut that looks diagonal in the unit box really faces up, and
+  // projected on a side plane its pattern smeared metres along the slab.
+  vec3 frA = abs(frPN / max(frSize, vec3(1e-4)));
   abFrN = frA.x >= frA.y && frA.x >= frA.z ? vec3(sign(frPN.x), 0.0, 0.0)
     : frA.y >= frA.z ? vec3(0.0, sign(frPN.y), 0.0) : vec3(0.0, 0.0, sign(frPN.z));
 }
@@ -400,7 +459,7 @@ export const FRACTURE_VERTEX_GLSL = /* glsl */ `
     step(0.5, abFrOn) * step(abFrOn, 1.5) * mix(${FRACTURE_COOL}, 1.0, step(abFrHash, ${FRACTURE_HOT_SHARE})),
     max(0.0, -normalize(mat3(modelMatrix) * mat3(instanceMatrix) * abFrTrueN).y)
   );
-  vFrClass = abFrClass;
+  vFrClass = vec2(abFrClass, abFrHash);
 }
 #endif
 `;
@@ -410,8 +469,10 @@ export const FRACTURE_PARS_GLSL = /* glsl */ `
 #ifdef AB_FRACTURE
 // (falling, on a cut face, how far the face looks down)
 varying vec3 vFrLit;
-// DS2: the library class (fracture-library.ts FracClass).
-flat varying float vFrClass;
+// DS2: the library class (fracture-library.ts FracClass); G8: and the
+// piece's own hash (flat: a per-piece constant, concepts/traps/
+// interpolated-hash-inputs).
+flat varying vec2 vFrClass;
 #endif
 `;
 

@@ -295,8 +295,8 @@ if (brkDmg > 0.5 && brkDmg < 2.5 && uBurn > 0.0) {
   } else {
     // Rubble: glowing patches of embers under the soot.
     // DS2: in the face's own plane, smooth (the plan-view hash striped
-    // every steep face of the pile).
-    float wrPatch = mix(0.5, smoothstep(0.35, 0.65, abVNoise(wrW * 0.6, vBSeed * 19.0)),
+    // every steep face of the pile); G8: triplanar, like the rubble.
+    float wrPatch = mix(0.5, smoothstep(0.35, 0.65, abTriNoise(vPatPos * 0.6, brkTW, vBSeed * 19.0)),
       abDetail(1.67, max(wAA.x, wAA.y)));
     totalEmissiveRadiance += ${WRECK_EMBER} * (wrPatch * wrFlick * wrK);
   }

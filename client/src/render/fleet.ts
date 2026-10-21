@@ -34,7 +34,10 @@
 //   LOD    biplane-mid, fighter-mid and fighter-far as frames of one
 //          geometry: a per-instance kind picks the frame, the others'
 //          vertices collapse to a point (zero-area triangles; positions
-//          only — normals stay valid)
+//          only — normals stay valid). G8: one draw per frame, each over
+//          its own range of that geometry — every instance used to run all
+//          three frames' 25 000 vertices, so the air force's hundreds of
+//          far fighters (504 vertices each) cost millions a frame
 //
 // The fighter's canopy glass rides the GLASS draw (the same frame select)
 // and its prop blur the BLUR draw (the disc scaled by its matrix).
@@ -179,6 +182,28 @@ function merged(
   );
   if (!g) throw new Error("fleet: merge failed");
   return g;
+}
+
+/** G8: the LOD geometry's frames as vertex ranges, by frame id (aPart.x;
+ * merged() lays each frame's parts out contiguously, in frame order). */
+function frameRanges(
+  g: THREE.BufferGeometry,
+): { start: number; count: number }[] {
+  const part = g.getAttribute("aPart") as THREE.BufferAttribute;
+  const out: { start: number; count: number }[] = [];
+  for (let i = 0; i < part.count; i++) {
+    const f = part.getX(i);
+    const r = out[f];
+    if (!r) {
+      if (f !== out.length) throw new Error("fleet: LOD frames out of order");
+      out.push({ start: i, count: 1 });
+    } else if (r.start + r.count === i) {
+      r.count++;
+    } else {
+      throw new Error("fleet: an LOD frame is not contiguous");
+    }
+  }
+  return out;
 }
 
 /** A fighter geometry (already in the fleet layout, fighter.ts) with its
@@ -584,9 +609,11 @@ export class PlaneFleet {
   private readonly scarf: Draw;
   private readonly farLivery: Draw;
   private readonly farMisc: Draw;
-  /** DT1: the enemy's near airframe, and the shared mid / far LOD frames. */
+  /** DT1: the enemy's near airframe, and the shared mid / far LOD frames.
+   * G8: one draw per frame (its own range of the shared geometry), so a far
+   * fighter runs its 504 vertices, not all three frames' 25 000. */
   private readonly enemy: Draw;
-  private readonly lod: Draw;
+  private readonly lod: readonly Draw[];
   private readonly entries: Entry[] = [];
   private count = 0;
   /** Mobile draws neither the glass nor the scarf (quality.ts, P4). */
@@ -889,24 +916,28 @@ export class PlaneFleet {
       CAPACITY_ENEMY,
       { deflect: true, bombs: true },
     );
-    this.lod = this.draw(
-      lodGeo,
-      fleetMaterial(
-        M.body,
-        {
-          key: "lod",
-          hero: true,
-          exhaust: true,
-          damage: true,
-          livery: true,
-          rm: true,
-          select: true,
-        },
-        hinges,
-        white,
+    const lodMaterial = fleetMaterial(
+      M.body,
+      {
+        key: "lod",
+        hero: true,
+        exhaust: true,
+        damage: true,
+        livery: true,
+        rm: true,
+        select: true,
+      },
+      hinges,
+      white,
+    );
+    this.lod = frameRanges(lodGeo).map((range) =>
+      this.draw(
+        lodGeo,
+        lodMaterial,
+        CAPACITY_ALL,
+        { livery: true, kind: true },
+        range,
       ),
-      CAPACITY_ALL,
-      { livery: true, kind: true },
     );
     for (const m of Object.values(M)) {
       if (m instanceof THREE.Material) m.dispose();
@@ -925,12 +956,14 @@ export class PlaneFleet {
       kind?: boolean;
       bombs?: boolean;
     },
+    range?: { start: number; count: number },
   ): Draw {
     const geometry = new THREE.BufferGeometry();
     for (const [name, a] of Object.entries(source.attributes)) {
       geometry.setAttribute(name, a);
     }
     if (source.index) geometry.setIndex(source.index);
+    if (range) geometry.setDrawRange(range.start, range.count);
     const mesh = new THREE.InstancedMesh(geometry, material, capacity);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.count = 0;
@@ -1087,16 +1120,15 @@ export class PlaneFleet {
       } else if (level === 1 || enemy) {
         if (level === 1) mid++;
         else far++;
-        const k = this.put(this.lod, m, e, damage, 0, 0, 0, 0);
-        setLivery(this.lod, pr, pg, pb, sec);
-        this.lod.kind?.setX(
-          k,
-          !enemy
-            ? FRAME_BIPLANE_MID
-            : level === 1
-              ? FRAME_FIGHTER_MID
-              : FRAME_FIGHTER_FAR,
-        );
+        const frame = !enemy
+          ? FRAME_BIPLANE_MID
+          : level === 1
+            ? FRAME_FIGHTER_MID
+            : FRAME_FIGHTER_FAR;
+        const lod = this.lod[frame] as Draw;
+        const k = this.put(lod, m, e, damage, 0, 0, 0, 0);
+        setLivery(lod, pr, pg, pb, sec);
+        lod.kind?.setX(k, frame);
       } else {
         far++;
         this.put(this.farLivery, m, e, damage, 0, 0, 0, 0);

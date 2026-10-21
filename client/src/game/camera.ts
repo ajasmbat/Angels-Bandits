@@ -651,11 +651,12 @@ export function collapseShakeAmount(
     const c = list[e] as Collapse;
     const age = serverMs - c.t0;
     if (age < COLLAPSE_LEAD_MS || age > c.endMs + 1000) continue;
-    const d = Math.hypot(
-      wrapDeltaAxis(c.x, pos.x),
-      pos.y * 0.5,
-      wrapDeltaAxis(c.z, pos.z),
-    );
+    // G8: sqrt, not a three-argument Math.hypot (it allocated per
+    // collapse per frame: tools/destruction-bench.ts).
+    const dx = wrapDeltaAxis(c.x, pos.x);
+    const dy = pos.y * 0.5;
+    const dz = wrapDeltaAxis(c.z, pos.z);
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (d >= COLLAPSE_SHAKE_RANGE) continue;
     const size = Math.min(1, 0.35 + c.chunks.length / 120);
     const near = 1 - d / COLLAPSE_SHAKE_RANGE;

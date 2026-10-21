@@ -1697,8 +1697,8 @@ const HEAP_SPILL = 0.08;
 const PLATE_MIN = 0.4;
 const PLATE_SPAN = 0.35;
 const PLATE_JOSTLE = 0.4;
-const SLIDE_SPEED = 9;
-const SLIDE_MAX_S = 2.5;
+const SLIDE_SPEED = 12;
+const SLIDE_MAX_S = 1.2;
 /** Most a plate lies tilted, rad (~46°: steeper than the pile, it slid). */
 const PLATE_TILT_MAX = 0.8;
 /** Steps of a heap's rise table. */
@@ -2432,7 +2432,9 @@ function sweepBounds(c: Draft): void {
       Math.hypot(c.hx[i] as number, c.hy[i] as number, c.hz[i] as number) + 1;
     grow(all, x, y, z, r);
   }
-  // G9
+  grow(all, rest.x0, rest.y0, rest.z0, 0);
+  grow(all, rest.x1, rest.y1, rest.z1, 0);
+  // G9: the heap, in the rest bounds only.
   const heap = c.heap;
   if (heap !== null) {
     grow(rest, heap.x0, 0, heap.z0, 0);
@@ -2444,8 +2446,6 @@ function sweepBounds(c: Draft): void {
       0,
     );
   }
-  grow(all, rest.x0, rest.y0, rest.z0, 0);
-  grow(all, rest.x1, rest.y1, rest.z1, 0);
 }
 
 // --- D10 floor events --------------------------------------------------------

@@ -160,7 +160,10 @@ describe("bots dodge D3 collapse debris", () => {
     expect(c.bounds.y1).toBeGreaterThan(y + PLAYER_RADIUS);
     const zMid = (c.bounds.z0 + c.bounds.z1) / 2;
     const start = { x: c.x + c.bounds.x0 - 200, y, z: c.z + zMid };
-    const ahead = 450;
+    // The decoy 140 m past the zone's far side (450 m when the zone was
+    // 110 m across; G9's heap slides its rubble out wider): circling it
+    // never clips the zone either way.
+    const ahead = 200 + (c.bounds.x1 - c.bounds.x0) + 140;
     // Long enough for the chase to have passed the tower either way.
     const ms = Math.min(7000, c.endMs);
     const movers: MoverField = { ...EMPTY_MOVERS, collapses: field };

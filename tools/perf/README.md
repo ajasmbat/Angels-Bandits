@@ -3167,7 +3167,7 @@ seeded angle of repose (30–40°, `common/src/city/repose.ts`; its run-out
 held to the near side of its street). The physics' settle raises its heap by the same rule.
 Both heaps rise as their pile comes to rest and are drawn and collided at
 the same share. `ruin-detail`, staged, on the runner (SwiftShader, High,
-ratio 1): **2 683 519 → 2 680 587 triangles** — the mound (4 m cells, ~3k
+ratio 1): **2 683 519 → 2 680 663 triangles** — the mound (4 m cells, ~3k
 triangles) and its dressing are paid for by the column stubs of the lower
 half of a pancake, which end buried (1668 → 1611 pieces).
 

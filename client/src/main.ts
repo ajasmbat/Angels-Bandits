@@ -7599,7 +7599,7 @@ const frame = (rafNow: number): void => {
   const collapseViewer = qaView ? qaView.eye : chase.position;
   dust.update(socket.collapses.list, collapseViewer, collapseMs, camera.aspect);
   ruinSmoke.update(socket.collapses.list, collapseViewer, collapseMs, now);
-  rubbleHeaps.update(socket.collapses.list, collapseViewer);
+  rubbleHeaps.update(socket.collapses.list, collapseViewer, collapseMs);
   // DS1: the local host's debris physics LODs and budgets by this camera
   // (the lab's eye in the lab) and tier — throttled to a few messages a
   // second.

@@ -21,6 +21,7 @@ import {
   PANCAKE,
   ROLE_COLUMN,
   ROLE_SHEET,
+  ROLE_SLAB,
   TOPPLE,
   blankPose,
   buildCollapse,
@@ -294,8 +295,8 @@ describe("D3 debris trajectories", () => {
           Object.assign(a, b);
         }
       }
-      // At rest: flat slabs on the ground (or on the slab under them),
-      // inside the world, never above the building they fell from.
+      // At rest: on the ground (or on the rubble under them), inside the
+      // world, never above the building they fell from.
       const bld = city[c.building] as Building;
       for (let i = 0; i < c.n; i++) {
         const p = piecePose(c, i, Number.POSITIVE_INFINITY, a);
@@ -312,6 +313,11 @@ describe("D3 debris trajectories", () => {
           expect(c.ay[i] as number).toBeLessThanOrEqual(
             (c.hy[i] as number) * COLLAPSE_COLUMN_RUBBLE + COLLAPSE_COLUMN_SIDE,
           );
+        } else if (style === "pancake" && c.role[i] === ROLE_SLAB) {
+          // G9: a heap's plate lies tilted on the mound — still thin,
+          // crushed rubble, never stood on end.
+          expect(c.rhy[i] as number).toBeLessThan(1);
+          expect(Math.abs(c.rphi[i] as number)).toBeLessThanOrEqual(0.8);
         } else {
           expect(c.ay[i] as number).toBeLessThan(2);
         }
@@ -328,7 +334,7 @@ describe("D3 debris trajectories", () => {
     });
   }
 
-  it("a topple lands across the street on its weak side; a pancake inside its footprint", () => {
+  it("a topple lands across the street on its weak side; a pancake heaps up in its own street", () => {
     const t = sampleCollapse("topple");
     const b = t.city[t.c.building] as Building;
     // Base kept midway along −x: it falls toward +x, past its own face.
@@ -336,17 +342,23 @@ describe("D3 debris trajectories", () => {
     expect(t.c.restBounds.x1).toBeGreaterThan(b.width / 2 + 10);
     const p = sampleCollapse("pancake");
     const pb = p.city[p.c.building] as Building;
-    // The floors pancake inside the footprint; D10's facade sheets peel off
-    // into the street — never across it.
+    // G9: the floors slump into a heap that runs out into the street (its
+    // spill to the toe), and D10's facade sheets peel off into it — never
+    // across it.
+    const heap = p.c.heap;
+    if (!heap) throw new Error("a pancake without a heap");
+    expect(heap.x0).toBeGreaterThanOrEqual(-pb.width / 2 - STREET_WIDTH - 8);
+    expect(heap.x0 + heap.nx * heap.cell).toBeLessThanOrEqual(
+      pb.width / 2 + STREET_WIDTH + 8,
+    );
     for (let i = 0; i < p.c.n; i++) {
       const x0 = (p.c.rx[i] as number) - (p.c.ax[i] as number);
       const x1 = (p.c.rx[i] as number) + (p.c.ax[i] as number);
       const reach =
         p.c.role[i] === ROLE_SHEET
           ? STREET_WIDTH
-          : p.c.role[i] === ROLE_COLUMN
-            ? (p.c.ay[i] as number) // a leaning stub's top overhangs
-            : 0.05; // a slumped slab's tilt widens its box by a few cm
+          : // a plate (or a leaning stub) overhangs its place on the heap
+            STREET_WIDTH + (p.c.ax[i] as number);
       expect(x0).toBeGreaterThanOrEqual(-pb.width / 2 - reach);
       expect(x1).toBeLessThanOrEqual(pb.width / 2 + reach);
     }

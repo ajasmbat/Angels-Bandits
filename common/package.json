@@ -17,6 +17,7 @@
     "./city/archetype": "./src/city/archetype.ts",
     "./city/structure": "./src/city/structure.ts",
     "./city/physpose": "./src/city/physpose.ts",
+    "./city/repose": "./src/city/repose.ts",
     "./city/destruction": "./src/city/destruction.ts",
     "./city/collapse": "./src/city/collapse.ts",
     "./city/street": "./src/city/street.ts",

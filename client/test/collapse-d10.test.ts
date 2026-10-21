@@ -378,7 +378,16 @@ describe("D10 dust: the surge rolls down the streets, squibs fire on the floors"
   it("the haze follows the surge down a street, and is nothing far away", () => {
     const c = felled(PANCAKE);
     const b = city[TOWER] as Building;
-    const t = c.t0 + c.endMs + 4000;
+    // 4 s after the last piece landed (G9: the heap's slides after it are
+    // not the surge's clock).
+    let landed = 0;
+    for (let i = 0; i < c.n; i++) {
+      landed = Math.max(
+        landed,
+        ((c.start[i] as number) + (c.land[i] as number) + c.squashS) * 1000,
+      );
+    }
+    const t = c.t0 + landed + 4000;
     // A camera low in the street off the tower's +x side, a block along.
     const sx = Math.ceil((b.x + b.width / 2) / BLOCK_PITCH) * BLOCK_PITCH;
     const cam = { x: sx, y: 6, z: b.z + 80 };

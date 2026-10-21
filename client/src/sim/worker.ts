@@ -12,7 +12,14 @@
 // gets a DebrisPhysics, and every tick's pose frame goes to the page as one
 // transferred Float32Array (`poses`). `?sim=AB_PHYSICS:0` turns it off (the
 // closed-form collapses, as multiplayer has them).
+//
+// G9: a snapshot (20 Hz, every tick) is decoded HERE, off the page's main
+// thread, and goes down packed (`snap`, common/src/net.ts packSnapshot):
+// the page reads it into objects it reuses, so no text, no JSON and no
+// garbage per tick lands on the frame. Every other frame stays JSON.
 
+import { packSnapshot } from "@angels-bandits/common/net";
+import type { WireSnapshotMsg } from "@angels-bandits/common/protocol";
 import {
   DebrisPhysics,
   PHYS_BUDGET,
@@ -43,9 +50,34 @@ const links = new Map<
   { message: (text: string) => void; closed: () => void }
 >();
 
+/** A snapshot frame's first bytes (common/src/interest.ts writes them). */
+const SNAPSHOT_HEAD = new TextEncoder().encode('{"type":"snapshot"');
+const decoder = new TextDecoder();
+
+/** Is `frame` a snapshot? */
+function isSnapshot(frame: Uint8Array): boolean {
+  if (frame.length < SNAPSHOT_HEAD.length) return false;
+  for (let k = 0; k < SNAPSHOT_HEAD.length; k++) {
+    if (frame[k] !== SNAPSHOT_HEAD[k]) return false;
+  }
+  return true;
+}
+
 /** Connection `id` as the host's Transport. */
 function transport(id: number): Transport {
   let open = true;
+  // G9: this connection's id table (an id's index in a packed snapshot).
+  const ids = new Map<string, number>();
+  const fresh: string[] = [];
+  const indexOf = (who: string): number => {
+    let k = ids.get(who);
+    if (k === undefined) {
+      k = ids.size;
+      ids.set(who, k);
+      fresh.push(who);
+    }
+    return k;
+  };
   let message: (text: string) => void = () => {};
   let closed: () => void = () => {};
   const end = (code: number, reason: string): void => {
@@ -71,6 +103,16 @@ function transport(id: number): Transport {
     },
     send(frame, own) {
       if (!open) return;
+      if (isSnapshot(frame)) {
+        const msg = JSON.parse(decoder.decode(frame)) as WireSnapshotMsg;
+        const base = ids.size;
+        const data = packSnapshot(msg.time, msg.p, indexOf);
+        if (fresh.length > 0) {
+          post({ t: "ids", id, base, ids: fresh.splice(0) });
+        }
+        post({ t: "snap", id, data }, [data.buffer]);
+        return;
+      }
       // Hand the buffer over when it is exactly this frame's; a broadcast's
       // shared bytes are copied (the host reuses them for other members).
       const whole =

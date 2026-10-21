@@ -73,6 +73,13 @@ import {
   heapRecords,
 } from "@angels-bandits/common/city/physpose";
 import {
+  heapGrid,
+  pileBox,
+  reposeMound,
+  reposeRun,
+  reposeSlope,
+} from "@angels-bandits/common/city/repose";
+import {
   MATERIAL_DENSITY,
   hingeLine,
 } from "@angels-bandits/common/city/structure";
@@ -182,17 +189,16 @@ const BEAR_POINTS = 6;
 const LEAN_KICK = 0.06;
 /** Settled pieces under this volume merge into the heap, m³. */
 const MERGE_M3 = 6;
-/** The heap: grid cell, m; the share of the collapse's volume that is fine
- * rubble; its highest point, m (always flyable over). */
+/** The heap: grid cell, m, and at most this many cells a side (240 m at
+ * 1.5 m). G9: its crest, a share of the pile's top (the top of the pile
+ * lies on it, the rest is buried in its slopes; always flyable over: never
+ * above the pile), and the share of a piece's half extents its plan and
+ * height count for (a box lying askew reaches past them; its middle is
+ * what holds the pile up). */
 const HEAP_CELL = 1.5;
-const HEAP_SHARE = 0.05;
-const HEAP_MAX_M = 6;
-/** The heap's grid at most this many cells a side (240 m at 1.5 m), and
- * how far a vertex is knocked up or down, m. */
 const HEAP_CELLS_MAX = 160;
-/** The grid the mound's shape is blurred on, m (a multiple of HEAP_CELL). */
-const HEAP_BLUR_CELL = 3;
-const HEAP_KNOCK_M = 0.9;
+const HEAP_CREST = 0.85;
+const HEAP_REACH = 0.8;
 
 const HELD = 0;
 const FREE = 1;
@@ -1635,35 +1641,32 @@ export class DebrisPhysics implements PhysicsHost {
   private settle(pc: PhysCollapse): void {
     pc.settled = true;
     const c = pc.c;
-    let merged = 0;
     for (let i = 0; i < c.n; i++) {
       const vol =
         8 * (c.hx[i] as number) * (c.hy[i] as number) * (c.hz[i] as number);
-      if (vol < MERGE_M3) {
-        pc.merged[i] = 1;
-        merged += vol;
-      }
+      if (vol < MERGE_M3) pc.merged[i] = 1;
     }
-    pc.heap = this.raiseHeap(pc, merged);
+    pc.heap = this.raiseHeap(pc);
     if (pc.heap) pc.heapBody = this.groundHeap(pc.c, pc.heap);
     this.pendingHeaps.push(this.collapses.indexOf(pc));
   }
 
   /**
-   * The fine rubble of a settled collapse: its pieces' plan coverage,
-   * blurred into a mound holding HEAP_SHARE of their volume (plus what was
-   * merged), roughened by a hash, never over HEAP_MAX_M, zero at its rim.
+   * The fine rubble of a settled collapse (G9): the pile its pieces make —
+   * each one's top over its plan, × HEAP_CREST — slumped to the angle of
+   * repose (common/src/city/repose.ts, the closed form's rule), so its
+   * flanks run out into the street under a slope and only the top of the
+   * pile lies on it; never over the pile's own top.
    */
-  private raiseHeap(pc: PhysCollapse, extra: number): RubbleHeap | null {
+  private raiseHeap(pc: PhysCollapse): RubbleHeap | null {
     const c = pc.c;
     let x0 = Number.POSITIVE_INFINITY;
     let x1 = Number.NEGATIVE_INFINITY;
     let z0 = Number.POSITIVE_INFINITY;
     let z1 = Number.NEGATIVE_INFINITY;
-    const pose = new Float64Array(c.n * 3);
-    const span = new Float64Array(c.n);
+    let top = 0;
+    const pose = new Float64Array(c.n * 4);
     const frames = new Map<Group, BodyFrame>();
-    let total = extra;
     for (let i = 0; i < c.n; i++) {
       const g = pc.of[i];
       if (!g || g.state < 0) continue;
@@ -1675,118 +1678,43 @@ export class DebrisPhysics implements PhysicsHost {
       const p = this.pieceWorld(g, i, f);
       const x = wrapDeltaAxis(c.x, p.x);
       const z = wrapDeltaAxis(c.z, p.z);
-      pose[i * 3] = x;
-      pose[i * 3 + 1] = p.y;
-      pose[i * 3 + 2] = z;
-      const r = Math.max(
-        c.hx[i] as number,
-        c.hz[i] as number,
-        c.hy[i] as number,
-      );
-      span[i] = r;
+      // Its plan, and how high it stands (a lying slab its thickness, a
+      // standing one its height: the rotated box's reach, short of the
+      // diagonal).
+      const r = HEAP_REACH * Math.max(c.hx[i] as number, c.hz[i] as number);
+      const up = p.y + HEAP_REACH * (c.hy[i] as number);
+      pose[i * 4] = x;
+      pose[i * 4 + 1] = up;
+      pose[i * 4 + 2] = z;
+      pose[i * 4 + 3] = r;
       x0 = Math.min(x0, x - r);
       x1 = Math.max(x1, x + r);
       z0 = Math.min(z0, z - r);
       z1 = Math.max(z1, z + r);
-      total +=
-        HEAP_SHARE *
-        8 *
-        (c.hx[i] as number) *
-        (c.hy[i] as number) *
-        (c.hz[i] as number);
+      top = Math.max(top, up);
     }
-    if (!(x1 > x0) || !(z1 > z0)) return null;
-    // The mound's shape on a coarse grid (HEAP_BLUR_CELL): coverage, then
-    // three separable box blurs, radius 2 (edges included)…
-    const C = HEAP_BLUR_CELL;
-    const pad = 2 * C;
-    x0 -= pad;
-    z0 -= pad;
-    const cx = Math.min(HEAP_CELLS_MAX / 2, Math.ceil((x1 + pad - x0) / C));
-    const cz = Math.min(HEAP_CELLS_MAX / 2, Math.ceil((z1 + pad - z0) / C));
-    const crow = cx + 1;
-    const w = new Float32Array(crow * (cz + 1));
+    if (!(x1 > x0) || !(z1 > z0) || !(top > 0.5)) return null;
+    const slope = reposeSlope(c.id);
+    const crest = HEAP_CREST * top;
+    const heap = heapGrid(
+      x0,
+      x1,
+      z0,
+      z1,
+      reposeRun(crest, slope) + 2 * HEAP_CELL,
+      HEAP_CELL,
+      HEAP_CELLS_MAX,
+    );
     for (let i = 0; i < c.n; i++) {
-      if (!pc.of[i] || pc.merged[i]) continue;
-      const x = pose[i * 3] as number;
-      const z = pose[i * 3 + 2] as number;
-      const r = span[i] as number;
-      const weight = Math.max(0, pose[i * 3 + 1] as number) + 1;
-      const a0 = Math.max(0, Math.floor((x - r - x0) / C));
-      const a1 = Math.min(cx, Math.ceil((x + r - x0) / C));
-      const b0 = Math.max(0, Math.floor((z - r - z0) / C));
-      const b1 = Math.min(cz, Math.ceil((z + r - z0) / C));
-      for (let j = b0; j <= b1; j++) {
-        for (let k = a0; k <= a1; k++) {
-          w[j * crow + k] = (w[j * crow + k] as number) + weight;
-        }
-      }
+      const r = pose[i * 4 + 3] as number;
+      if (!(r > 0)) continue;
+      const x = pose[i * 4] as number;
+      const z = pose[i * 4 + 2] as number;
+      const up = Math.max(0, pose[i * 4 + 1] as number);
+      pileBox(heap, x - r, x + r, z - r, z + r, (crest * up) / top);
     }
-    const tmp = new Float32Array(w.length);
-    for (let pass = 0; pass < 3; pass++) {
-      for (let j = 0; j <= cz; j++) {
-        for (let k = 0; k <= cx; k++) {
-          let sum = 0;
-          let n = 0;
-          for (let kk = Math.max(0, k - 2); kk <= Math.min(cx, k + 2); kk++) {
-            sum += w[j * crow + kk] as number;
-            n++;
-          }
-          tmp[j * crow + k] = sum / n;
-        }
-      }
-      for (let j = 0; j <= cz; j++) {
-        for (let k = 0; k <= cx; k++) {
-          let sum = 0;
-          let n = 0;
-          for (let jj = Math.max(0, j - 2); jj <= Math.min(cz, j + 2); jj++) {
-            sum += tmp[jj * crow + k] as number;
-            n++;
-          }
-          w[j * crow + k] = sum / n;
-        }
-      }
-    }
-    let sum = 0;
-    for (let k = 0; k < w.length; k++) sum += w[k] as number;
-    if (!(sum > 0)) return null;
-    const scale = total / (sum * C * C);
-    // …then sampled (bilinear) onto the fine HEAP_CELL surface, each vertex
-    // scaled and knocked up or down a little by its own hash: rubble, not a
-    // dune. Zero at its rim.
-    const r = C / HEAP_CELL;
-    const nx = cx * r;
-    const nz = cz * r;
-    const row = nx + 1;
-    const h = new Float32Array(row * (nz + 1));
-    let top = 0;
-    for (let j = 1; j < nz; j++) {
-      const v = j / r;
-      const j0 = Math.min(cz - 1, Math.floor(v));
-      const fv = v - j0;
-      for (let k = 1; k < nx; k++) {
-        const u = k / r;
-        const k0 = Math.min(cx - 1, Math.floor(u));
-        const fu = u - k0;
-        const a = w[j0 * crow + k0] as number;
-        const bb = w[j0 * crow + k0 + 1] as number;
-        const cc = w[(j0 + 1) * crow + k0] as number;
-        const d = w[(j0 + 1) * crow + k0 + 1] as number;
-        const base =
-          (a * (1 - fu) * (1 - fv) +
-            bb * fu * (1 - fv) +
-            cc * (1 - fu) * fv +
-            d * fu * fv) *
-          scale;
-        const rough = 0.75 + 0.5 * hash3(c.id, k, j);
-        const knock =
-          base > 0.3 ? HEAP_KNOCK_M * (hash3(c.id + 7919, k, j) - 0.5) : 0;
-        const hv = Math.min(HEAP_MAX_M, Math.max(0, base * rough + knock));
-        h[j * row + k] = hv;
-        top = Math.max(top, hv);
-      }
-    }
-    return { x0, z0, cell: HEAP_CELL, nx, nz, h, top };
+    reposeMound(heap, slope, c.id, crest + 1);
+    return heap;
   }
 
   /** `heap` in the world: what the next collapse's debris piles onto. */
@@ -1940,13 +1868,4 @@ function rotateBy(
     y: y + q.w * ty + (q.z * tx - q.x * tz),
     z: z + q.w * tz + (q.x * ty - q.y * tx),
   };
-}
-
-/** A hash of three integers into [0, 1). */
-function hash3(a: number, b: number, c: number): number {
-  let h = Math.imul(a + 1, 0x9e3779b1);
-  h = Math.imul(h ^ (b + 0x632be5ab), 0x85ebca6b);
-  h = Math.imul(h ^ (c + 7), 0xc2b2ae35);
-  h ^= h >>> 15;
-  return (h >>> 0) / 4294967296;
 }

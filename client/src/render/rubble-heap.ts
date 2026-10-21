@@ -1,7 +1,12 @@
 // DS1 rubble heaps. When a physics collapse has settled, the host raises a
-// heap of fine rubble over its lot (server/src/debris-physics.ts raiseHeap:
-// the pieces' coverage blurred into an irregular mound, never over 6 m) and
-// sends it once; the big pieces lie half-buried in it. This draws each one.
+// heap of fine rubble over its lot (server/src/debris-physics.ts raiseHeap)
+// and sends it once; the big pieces lie half-buried in it. This draws each one.
+//
+// G9: every pancake has one now — the physics' and the closed form's
+// (Collapse.heap) both slumped to the angle of repose (common/src/city/
+// repose.ts) — and each rises as its pile comes to rest: the mesh is scaled
+// up by the share the collision reads at the same clock (heapShareAt,
+// PhysPoses.heapShare).
 //
 // Draw == collide: the mesh is exactly the surface heapHeight() collides
 // with (common/src/city/physpose.ts) — the same Float32 heights, the same
@@ -28,6 +33,7 @@ import { type Building, mulberry32 } from "@angels-bandits/common/city";
 import {
   type Collapse,
   KIND_BUILDING,
+  heapShareAt,
 } from "@angels-bandits/common/city/collapse";
 import type {
   PhysPoses,
@@ -64,6 +70,13 @@ const SLAB_SHARE = 0.3;
 const REBAR_SHARE = 0.04;
 const GLINT_SHARE = 0.05;
 const GLINT_SHARE_GLASS = 0.14;
+/** G9: the cell the glint shares are for, m (a coarser heap's vertex
+ * glints over more of its surface: its share falls with the cell's area). */
+const GLINT_CELL_M = 1.5;
+/** G9: the light the mound's relief is shaded by (unlit, it has none of
+ * its own: a tall heap read as a dune), toward the sky — and how much. */
+const RELIEF_L = [0.45, 0.8, 0.4] as const;
+const RELIEF = 0.55;
 /** The glitter's colour (linear; its peak channel under the bloom
  * threshold, over the darkest of the heap's vertex colours). */
 export const HEAP_GLINT_RGB = [0.4, 0.44, 0.5] as const;
@@ -91,6 +104,8 @@ export function heapGeometry(
   const col = new Float32Array(verts * 3);
   const glint = new Float32Array(verts);
   const rand = mulberry32(seed >>> 0);
+  const glints = glintShare * Math.min(1, (GLINT_CELL_M / heap.cell) ** 2);
+  const ll = Math.hypot(RELIEF_L[0], RELIEF_L[1], RELIEF_L[2]);
   for (let j = 0; j <= heap.nz; j++) {
     for (let i = 0; i <= heap.nx; i++) {
       const k = j * row + i;
@@ -107,6 +122,12 @@ export function heapGeometry(
         (heap.h[Math.max(0, j - 1) * row + i] as number);
       const slope = Math.min(1, Math.hypot(hx, hz) / (4 * heap.cell));
       const lift = Math.min(1, h / 3);
+      // G9: the relief, lit from the sky: the normal from the same
+      // differences (over two cells).
+      const nl =
+        (-hx * RELIEF_L[0] + 2 * heap.cell * RELIEF_L[1] - hz * RELIEF_L[2]) /
+        (Math.hypot(hx, 2 * heap.cell, hz) * ll);
+      const relief = 1 - RELIEF + RELIEF * Math.max(0, nl);
       // Broken concrete and brick in clods: a coarse patch hash (2 × 2
       // cells) and a fine one per vertex, darker on the steep faces and
       // in the low rim, soot over all of it.
@@ -116,7 +137,8 @@ export function heapGeometry(
         (0.35 + 0.45 * lift) *
         (1 - 0.45 * slope) *
         (0.55 + 0.6 * patch) *
-        (0.75 + 0.5 * fine);
+        (0.75 + 0.5 * fine) *
+        relief;
       // DS2: what this spot is — a slab chunk (by 3 × 3 patch), a bar of
       // rebar, or the building's own finish — and dust settled over the
       // top of the pile.
@@ -130,7 +152,7 @@ export function heapGeometry(
         col[k * 3 + ch] =
           v + ((HEAP_DUST[ch] as number) * (0.5 + 0.5 * lift) - v) * dust;
       }
-      glint[k] = h > 0.05 && rand() < glintShare ? 1 : 0;
+      glint[k] = h > 0.05 && rand() < glints ? 1 : 0;
     }
   }
   const index: number[] = [];
@@ -162,10 +184,14 @@ export function heapGeometry(
 }
 
 interface Drawn {
-  phys: PhysPoses;
+  /** What the heap came with: the physics' poses, or (G9) the collapse. */
+  src: PhysPoses | Collapse;
+  heap: RubbleHeap;
   mesh: THREE.Mesh;
   x: number;
   z: number;
+  /** G9: risen all the way (the dressing waits for it). */
+  risen: boolean;
 }
 
 export class RubbleHeaps {
@@ -188,20 +214,29 @@ export class RubbleHeaps {
     return n;
   }
 
-  /** Per frame: a mesh for every settled heap, at the image nearest
-   * `camera`; dropped with their collapse. */
-  update(collapses: readonly Collapse[], camera: Vec3): void {
+  /** Per frame: a mesh for every heap, at the image nearest `camera`,
+   * risen to its share at server ms `tMs` (null: the rest state); dropped
+   * with their collapse. */
+  update(
+    collapses: readonly Collapse[],
+    camera: Vec3,
+    tMs: number | null,
+  ): void {
     const seen = this.seen;
     seen.clear();
+    const t = tMs ?? Number.POSITIVE_INFINITY;
     // DS2: what the dressing is laid for — the drawn heaps and images.
     let key = 0;
     for (let k = 0; k < collapses.length; k++) {
       const c = collapses[k] as Collapse;
+      if (c.kind !== KIND_BUILDING) continue;
       const phys = c.phys;
-      if (c.kind !== KIND_BUILDING || !phys?.heap) continue;
+      const heap = phys !== null ? phys.heap : c.heap;
+      if (heap === null) continue;
+      const src = phys ?? c;
       seen.add(c.id);
       let d = this.drawn.get(c.id);
-      if (d && d.phys !== phys) {
+      if (d && (d.src !== src || d.heap !== heap)) {
         this.drop(c.id, d);
         d = undefined;
       }
@@ -211,7 +246,7 @@ export class RubbleHeaps {
         const tint = RUBBLE_TINT[mat] ?? CONCRETE;
         const mesh = new THREE.Mesh(
           heapGeometry(
-            phys.heap,
+            heap,
             tint,
             c.id * 7919 + c.building,
             mat === MAT_GLASS ? GLINT_SHARE_GLASS : GLINT_SHARE,
@@ -220,16 +255,26 @@ export class RubbleHeaps {
         );
         mesh.matrixAutoUpdate = false;
         this.group.add(mesh);
-        d = { phys, mesh, x: c.x, z: c.z };
+        d = { src, heap, mesh, x: c.x, z: c.z, risen: false };
         this.drawn.set(c.id, d);
       }
+      const rise = phys !== null ? phys.heapShare(t) : heapShareAt(c, t);
       const ox = d.x + imageIndex(camera.x, d.x) * WORLD_SIZE;
       const oz = d.z + imageIndex(camera.z, d.z) * WORLD_SIZE;
       const far = Math.hypot(ox - camera.x, oz - camera.z) > HEAP_DRAW_M;
-      d.mesh.visible = !far;
-      if (!far) key = (Math.imul(key, 31) + c.id * 7 + ox * 3 + oz * 5) | 0;
-      if (!far && (d.mesh.position.x !== ox || d.mesh.position.z !== oz)) {
+      d.mesh.visible = !far && rise > 0;
+      d.risen = rise >= 1;
+      if (d.mesh.visible && d.risen) {
+        key = (Math.imul(key, 31) + c.id * 7 + ox * 3 + oz * 5) | 0;
+      }
+      if (
+        d.mesh.visible &&
+        (d.mesh.position.x !== ox ||
+          d.mesh.position.z !== oz ||
+          d.mesh.scale.y !== rise)
+      ) {
         d.mesh.position.set(ox, 0, oz);
+        d.mesh.scale.y = rise;
         d.mesh.updateMatrix();
       }
     }
@@ -318,9 +363,8 @@ export class HeapDressing {
     this.key = key;
     let n = 0;
     for (const [id, d] of drawn) {
-      if (!d.mesh.visible) continue;
-      const heap = d.phys.heap;
-      if (!heap) continue;
+      if (!d.mesh.visible || !d.risen) continue;
+      const heap = d.heap;
       const rand = mulberry32((id * 2654435761) >>> 0);
       let placed = 0;
       for (

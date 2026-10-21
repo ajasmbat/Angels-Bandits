@@ -211,7 +211,15 @@ describe("DS1 settling, budgets and LOD", () => {
       const heap = phys.heap;
       if (!heap) throw new Error("no heap");
       expect(heap.top).toBeGreaterThan(0);
-      expect(heap.top).toBeLessThanOrEqual(6);
+      // G9: slumped to the angle of repose round the pile — flyable: never
+      // above the pile it buries.
+      let pile = 0;
+      const p = blankPose();
+      for (let i = 0; i < c.n; i++) {
+        piecePose(c, i, r.t, p);
+        pile = Math.max(pile, p.y + Math.hypot(p.hx, p.hy, p.hz));
+      }
+      expect(heap.top).toBeLessThanOrEqual(pile);
       // Zero at its rim, so it meets the street.
       expect(heapHeight(heap, heap.x0, heap.z0)).toBe(0);
     }

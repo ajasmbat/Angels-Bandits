@@ -3,7 +3,10 @@
 // exactly as they ride a ws — and these few envelopes only add what a
 // socket gives for free: opening, closing, and (solo only) the pause — plus
 // the QA tick profile (tools/perf/worker-tick.mjs), and (DS1) the debris
-// physics' poses down and the camera it LODs by up.
+// physics' poses down and the camera it LODs by up. G9: and every snapshot
+// comes down PACKED (common/src/net.ts packSnapshot) — a transferred
+// Float64Array the page decodes into objects it reuses, with each id an
+// index into the link's id table, sent once per new id.
 
 import type { PhysTier } from "@angels-bandits/server/debris-physics";
 import type { TickReport } from "@angels-bandits/server/host";
@@ -32,6 +35,11 @@ export type FromWorker =
   | { t: "open"; id: number }
   /** One server frame: UTF-8 JSON text, its buffer transferred. */
   | { t: "frame"; id: number; data: ArrayBuffer }
+  /** G9: one snapshot on connection `id`, packed, its buffer transferred. */
+  | { t: "snap"; id: number; data: Float64Array }
+  /** G9: ids new to connection `id`'s table, from index `base` on (sent
+   * before the snapshot that first names them). */
+  | { t: "ids"; id: number; base: number; ids: string[] }
   /** The host closed connection `id`. */
   | { t: "close"; id: number; code: number; reason: string }
   /** The host could not be built, or a frame could not be handled. */

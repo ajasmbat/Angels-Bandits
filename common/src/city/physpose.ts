@@ -21,7 +21,10 @@
 //
 // When a collapse has settled the physics sends its final frame (every piece
 // frozen) and its RUBBLE HEAP: a heightfield of fine rubble over the lot
-// (`RubbleHeap`), drawn as a mesh and collided as the same triangles.
+// (`RubbleHeap`; G9: slumped to the angle of repose, city/repose.ts), drawn
+// as a mesh and collided as the same triangles. G9: it rises over
+// HEAP_RISE_MS from the frame that brought it (`heapShare`), so the mound
+// slumps up round the pile instead of appearing.
 //
 // Not re-exported from city/index.ts; import "@angels-bandits/common/city/physpose".
 
@@ -75,6 +78,9 @@ export interface RubbleHeap {
   top: number;
 }
 
+/** G9: how long a physics heap takes to rise to full height, ms. */
+export const HEAP_RISE_MS = 2500;
+
 /** Height of `heap`'s surface at (x, z) (centre-relative), or −1 outside
  * it — exactly the drawn triangles. */
 export function heapHeight(heap: RubbleHeap, x: number, z: number): number {
@@ -96,24 +102,26 @@ export function heapHeight(heap: RubbleHeap, x: number, z: number): number {
     : h00 + (h11 - h01) * fu + (h01 - h00) * fv;
 }
 
-/** Does a sphere at (x, y, z) (centre-relative) of `radius` touch the heap?
+/** Does a sphere at (x, y, z) (centre-relative) of `radius` touch the heap
+ * risen to `rise` of its height (G9: the drawn mound is scaled the same)?
  * Tested at its centre and four points around it on the plan (the mound's
- * slopes are gentle: a flyable pile). */
+ * slopes are no steeper than the angle of repose: a flyable pile). */
 export function sphereHitsHeap(
   heap: RubbleHeap,
   x: number,
   y: number,
   z: number,
   radius: number,
+  rise = 1,
 ): boolean {
-  if (y - radius > heap.top) return false;
-  const h = heapHeight(heap, x, z);
+  if (y - radius > heap.top * rise) return false;
+  const h = heapHeight(heap, x, z) * rise;
   if (h > 0 && y - radius < h) return true;
   const r = radius * 0.7;
   for (let k = 0; k < 4; k++) {
     const sx = k === 0 ? r : k === 1 ? -r : 0;
     const sz = k === 2 ? r : k === 3 ? -r : 0;
-    const hk = heapHeight(heap, x + sx, z + sz);
+    const hk = heapHeight(heap, x + sx, z + sz) * rise;
     if (hk > 0 && y - radius * 0.7 < hk) return true;
   }
   return false;
@@ -177,6 +185,8 @@ export class PhysPoses {
   /** The largest piece's bounding radius, m (0 until `measure`). */
   reach = 0;
   heap: RubbleHeap | null = null;
+  /** G9: host ms of the frame that brought the heap (+∞ before). */
+  heapAt = Number.POSITIVE_INFINITY;
   /** Bumped on every frame (a renderer redraws when it moves). */
   version = 0;
 
@@ -208,6 +218,15 @@ export class PhysPoses {
 
   get settled(): boolean {
     return this.settledAt !== Number.POSITIVE_INFINITY;
+  }
+
+  /** G9: the share of its full height the heap stands at host ms `tMs`
+   * (0 before it came, rising over HEAP_RISE_MS, eased). */
+  heapShare(tMs: number): number {
+    const u = (tMs - this.heapAt) / HEAP_RISE_MS;
+    if (!(u > 0)) return 0;
+    if (u >= 1) return 1;
+    return u * u * (3 - 2 * u);
   }
 
   /** Frames held (the lab's scrub range is first…last). */
@@ -537,6 +556,7 @@ export class PhysRegistry {
           let top = 0;
           for (let k = 0; k < hh.length; k++)
             top = Math.max(top, hh[k] as number);
+          p.heapAt = t;
           p.heap = {
             x0: heaps[h + 2] as number,
             z0: heaps[h + 3] as number,

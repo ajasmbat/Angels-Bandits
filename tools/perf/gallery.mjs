@@ -7,7 +7,8 @@
 // params, e.g. `refl=0` for S6's before shots out of the same build;
 // AB_GALLERY_PROBE=streetGlow,farTraffic logs the pre-bloom HDR luma those
 // systems add to each shot, L8; AB_GALLERY_SHOT_TIMEOUT_MS how long one
-// shot may wait for its frame, O1).
+// shot may wait for its frame, O1; AB_GALLERY_STEADY_MS the steady window
+// each view logs as `steady <view> {p50,p95,p99,mean}`, G9).
 // The sky is pinned to deep night (`?sky=night`, L12) so shots never depend
 // on the server's time of night; views with a `sky` field force their own
 // phase through __ab.sky.
@@ -28,6 +29,8 @@ const PROBE = process.env.AB_GALLERY_PROBE
 /** O1: how long one shot may wait for its frame (a loaded software box
  * can take minutes over a staged collapse), ms. */
 const SHOT_MS = Number(process.env.AB_GALLERY_SHOT_TIMEOUT_MS ?? 180000);
+/** G9: the steady window read after each view is staged, ms. */
+const STEADY_MS = Number(process.env.AB_GALLERY_STEADY_MS ?? 3000);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** The host flags (SOLO: the page's own host reads them off `sim`; the
@@ -668,6 +671,25 @@ try {
     // view's ceiling in BUDGETS.galleryDraws where it has one.
     const draws = await page.evaluate(() => window.__ab.perf().drawCalls);
     await page.screenshot({ path: `${OUT}/${v.name}.png`, timeout: SHOT_MS });
+    // G9: the view's steady frame times, still staged — the meter reset
+    // after the staging stall and the shot, then ~3 s of frames. `shot`'s
+    // fps (the last 30 frames, read after the teardown) carries the stall.
+    const steady = await page.evaluate(async (ms) => {
+      // The staged frame's triangles (`shot` reads them after the teardown).
+      const triangles = window.__ab.perf().triangles;
+      window.__ab.perfReset();
+      await new Promise((done) => setTimeout(done, ms));
+      const s = window.__ab.perfStats();
+      const r = (x) => Math.round(x * 10) / 10;
+      return {
+        p50: r(s.p50),
+        p95: r(s.p95),
+        p99: r(s.p99),
+        mean: r(s.mean),
+        frames: s.count,
+        triangles,
+      };
+    }, STEADY_MS);
     const ceiling = BUDGETS.galleryDraws[v.name];
     if (ceiling !== undefined) judged.push({ name: v.name, draws, ceiling });
     console.log(
@@ -788,6 +810,7 @@ try {
       v.name,
       JSON.stringify(await page.evaluate(() => window.__ab.perf())),
     );
+    console.log("steady", v.name, JSON.stringify(steady));
     // L7: what the inferno drew (a build without it logs null).
     console.log(
       "inferno",

@@ -134,6 +134,82 @@ export function decodeSnapshotEntry(w: WireSnapshotEntry): SnapshotEntry {
   };
 }
 
+// --- G9: packed snapshots (solo) ---
+//
+// The solo game's sim worker hands the page each snapshot PACKED instead of
+// as JSON text (client/src/sim/worker.ts): the wire tuple's numbers in one
+// transferred Float64Array, each id as its index in the link's id table
+// (sent once, when an id first appears). The page decodes it straight into
+// objects it reuses — no text, no JSON, nothing allocated per snapshot.
+
+/** Floats before a packed snapshot's entries: its time and entry count. */
+export const SNAP_HEAD = 2;
+/** Floats per packed entry: the id's index, then the wire tuple's numbers
+ * x … hp, prot (0/1) and age (0 when absent). */
+export const SNAP_STRIDE = 12;
+
+/** `p` (a snapshot's wire tuples at `time`) packed, ids by `idIndex`. */
+export function packSnapshot(
+  time: number,
+  p: readonly WireSnapshotEntry[],
+  idIndex: (id: string) => number,
+): Float64Array {
+  const out = new Float64Array(SNAP_HEAD + p.length * SNAP_STRIDE);
+  out[0] = time;
+  out[1] = p.length;
+  for (let k = 0; k < p.length; k++) {
+    const w = p[k] as WireSnapshotEntry;
+    const o = SNAP_HEAD + k * SNAP_STRIDE;
+    out[o] = idIndex(w[0]);
+    for (let j = 1; j <= 9; j++) out[o + j] = w[j] as number;
+    out[o + 10] = w[10] ?? 0;
+    out[o + 11] = w[11] ?? 0;
+  }
+  return out;
+}
+
+/** A snapshot entry to decode packed ones into (reused). */
+export const blankSnapshotEntry = (): SnapshotEntry => ({
+  id: "",
+  pose: {
+    pos: { x: 0, y: 0, z: 0 },
+    quat: { x: 0, y: 0, z: 0, w: 1 },
+    speed: 0,
+  },
+  hp: 0,
+  prot: false,
+  age: 0,
+});
+
+/** decodeSnapshotEntry for the packed entry at `o` of `data`, id `id`,
+ * written into `out` (the same rounding undone; nothing allocated). */
+export function decodePackedEntry(
+  data: Float64Array,
+  o: number,
+  id: string,
+  out: SnapshotEntry,
+): SnapshotEntry {
+  const qx = (data[o + 4] as number) / QUAT_SCALE;
+  const qy = (data[o + 5] as number) / QUAT_SCALE;
+  const qz = (data[o + 6] as number) / QUAT_SCALE;
+  const qw = (data[o + 7] as number) / QUAT_SCALE;
+  const norm = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw) || 1;
+  const pose = out.pose;
+  out.id = id;
+  pose.pos.x = wrapUnits(data[o + 1] as number) / POS_SCALE;
+  pose.pos.y = (data[o + 2] as number) / POS_SCALE;
+  pose.pos.z = wrapUnits(data[o + 3] as number) / POS_SCALE;
+  pose.quat.x = qx / norm;
+  pose.quat.y = qy / norm;
+  pose.quat.z = qz / norm;
+  pose.quat.w = qw / norm;
+  pose.speed = (data[o + 8] as number) / SPEED_SCALE;
+  out.hp = data[o + 9] as number;
+  out.prot = data[o + 10] === 1;
+  out.age = data[o + 11] as number;
+  return out;
+}
+
 /** The pose a remote will actually be shown at, given what the server holds —
  * i.e. `pose` put through the wire. Handy for proving quantisation can never
  * flip a validation outcome. */

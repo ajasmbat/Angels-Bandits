@@ -19,7 +19,8 @@ import { interpDelayFor, nextJitter } from "@angels-bandits/common/net";
 export class InterpDelay {
   /** Smoothed snapshot-arrival jitter, ms. */
   private jitterMs = 0;
-  private prevArrivalMs: number | null = null;
+  /** NaN before the first (G9: a plain double, not boxed per snapshot). */
+  private prevArrivalMs = Number.NaN;
 
   /** Record one snapshot's arrival on the LOCAL clock (performance.now()). */
   observe(arrivalMs: number): void {
@@ -27,7 +28,7 @@ export class InterpDelay {
     this.prevArrivalMs = arrivalMs;
     // The first snapshot has no gap, and a non-monotonic clock reading is not
     // evidence of anything — either way, nothing to learn yet.
-    if (prev === null || arrivalMs <= prev) return;
+    if (Number.isNaN(prev) || arrivalMs <= prev) return;
     this.jitterMs = nextJitter(this.jitterMs, arrivalMs - prev);
   }
 
@@ -44,7 +45,7 @@ export class InterpDelay {
   /** Forget the arrival history (a reconnect; the old gaps mean nothing). */
   reset(): void {
     this.jitterMs = 0;
-    this.prevArrivalMs = null;
+    this.prevArrivalMs = Number.NaN;
   }
 }
 

@@ -50,6 +50,14 @@
 // leaning out of the pile — resting on the ground or on the rubble under it,
 // never on something that could later be shot away.
 //
+// G9: a PANCAKE ends as a HEAP, not a cake of storeys. Its pieces land as
+// they always did, on the stack, then slide (`slide`) down to their heap
+// pose: each storey slab a broken plate (a seeded share of its bay), tilted
+// to the slope it lies on, the upper storeys out on the flanks and a few in
+// the street, the lower ones buried. The mound of fine rubble they lie in
+// (`heap`, city/repose.ts: the angle of repose, 30–40°) rises as they come
+// to rest, and is drawn and collided as the same triangles.
+//
 // DL1: every tunable above reads a DestructionTuning (common/src/
 // destruction-tuning.ts) — the planner, the builder and the chain probe take
 // one as a trailing `tuning = DEFAULT_DESTRUCTION_TUNING` (held in `T` for
@@ -118,8 +126,15 @@ import type { Building } from "./index";
 // movers.ts ↔ collapse.ts is a module cycle (collideMovers reads the field;
 // a crane fall reads the crane's boxes). Every use is at call time.
 import { type CraneSite, craneBoxesAt, slewAngle } from "./movers";
-import type { PhysPoses, PhysRegistry } from "./physpose";
-import { PHYS_CLOCK, sphereHitsHeap } from "./physpose";
+import type { PhysPoses, PhysRegistry, RubbleHeap } from "./physpose";
+import { PHYS_CLOCK, heapHeight, sphereHitsHeap } from "./physpose";
+import {
+  heapGrid,
+  pileBox,
+  reposeMound,
+  reposeRun,
+  reposeSlope,
+} from "./repose";
 import { mulberry32 } from "./rng";
 import {
   MAT_CONCRETE,
@@ -1014,8 +1029,18 @@ export interface Collapse {
   readonly ax: Float64Array;
   readonly ay: Float64Array;
   readonly az: Float64Array;
+  /** G9: how long a piece slides from where it landed to its rest pose,
+   * s, on top of the squash (0 but for a heap's pieces). */
+  readonly slide: Float64Array;
   /** Ms after t0 when the last piece is at rest. */
   readonly endMs: number;
+  /** G9: a pancake's fine-rubble heap (centre-relative; city/repose.ts) —
+   * drawn and collided as the same triangles — or null. It rises as the
+   * pieces come to rest: `heapRise` is its share of full height at even
+   * steps from `heapFrom` to `endMs` (ms after t0); `heapShareAt` reads it. */
+  readonly heap: RubbleHeap | null;
+  readonly heapFrom: number;
+  readonly heapRise: Float32Array | null;
   /** DL1: what it was built with — gravity on its ballistic arcs, m/s²,
    * the landing squash, s, and the lead beat, ms (the defaults' constants
    * outside a Destruction Lab). Posing reads these, never a tuning. */
@@ -1227,6 +1252,21 @@ export function posePieceNow(
 export const collapseSettledAt = (c: Collapse): number =>
   c.phys !== null ? c.phys.settledAt : c.t0 + c.endMs;
 
+/** G9: the share of its full height collapse `c`'s heap stands at server
+ * ms `tMs` (0 without a heap; 1 once the collapse lies still) — what the
+ * renderer scales the mound by and the collision reads it at. */
+export function heapShareAt(c: Collapse, tMs: number): number {
+  const rise = c.heapRise;
+  if (rise === null) return 0;
+  const t = tMs - c.t0;
+  if (t >= c.endMs) return 1;
+  if (!(t > c.heapFrom)) return 0;
+  const f = ((t - c.heapFrom) / (c.endMs - c.heapFrom)) * (rise.length - 1);
+  const j = Math.floor(f);
+  const a = rise[j] as number;
+  return a + ((rise[j + 1] as number) - a) * (f - j);
+}
+
 /** piecePose at `poseClock.tMs`. */
 function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
   // DS1: a physics collapse poses from its frames (and a crane never is).
@@ -1246,7 +1286,7 @@ function poseNow(c: Collapse, i: number, out: PiecePose): PiecePose {
     out.rest = false;
     return out;
   }
-  const squash = c.squashS;
+  const squash = c.squashS + (c.slide[i] as number);
   if (tau >= land + squash) {
     out.x = c.rx[i] as number;
     out.y = c.ry[i] as number;
@@ -1671,6 +1711,15 @@ export function buildCollapse(
     base = Math.min(base, p.y - p.hy);
     top = Math.max(top, p.y + p.hy);
   }
+  if (style === PANCAKE && top > base) {
+    // G9: a pancake's lower storeys end deep in its heap, and their column
+    // stubs are hidden in the slabs until then: never seen, they go.
+    for (let k = raw.length - 1; k >= 0; k--) {
+      const p = raw[k] as RawPiece;
+      if (p.role === ROLE_COLUMN && (p.y - base) / (top - base) < COLUMN_KEEP)
+        raw.splice(k, 1);
+    }
+  }
   const f = wire.f;
   let fail =
     style === PANCAKE && typeof f === "number" && Number.isFinite(f)
@@ -1771,6 +1820,186 @@ function breakUp(c: Draft, i: number, drift = 1): void {
   }
 }
 
+/** G9 heaps: the closed-form mound's grid cell, m, and most cells a side
+ * (it is drawn whole: 4 m holds a supertall's to ~3k triangles); its crest, as a share of the stack it slumps from (about the
+ * stack's volume, spread out at the angle of repose); the share of upper
+ * plates that spill out past its toe into the street; a plate's share of
+ * its storey's bay (seeded, per side); how far a plate is jostled on the
+ * plan, a share of its bay; and the slide down the pile, m/s, and its
+ * longest, s. */
+const HEAP_CELL_M = 4;
+const HEAP_CELLS_MAX = 96;
+const HEAP_CREST = 0.55;
+const HEAP_SPILL = 0.08;
+const PLATE_MIN = 0.4;
+const PLATE_SPAN = 0.35;
+const PLATE_JOSTLE = 0.4;
+const SLIDE_SPEED = 12;
+const SLIDE_MAX_S = 1.2;
+/** Most a plate lies tilted, rad (~46°: steeper than the pile, it slid). */
+const PLATE_TILT_MAX = 0.8;
+/** Steps of a heap's rise table. */
+const HEAP_RISE_STEPS = 16;
+/** A pancake keeps the column stubs of its upper storeys only (a share of
+ * its height): the lower ones are buried in the heap. */
+const COLUMN_KEEP = 0.5;
+
+/**
+ * G9: a PANCAKE's heap and its pieces' rest poses on it. `floor` is the
+ * stack each piece lands on (D10's: bottom-up, slab on slab). The stack
+ * slumps to the angle of repose: its heights, × HEAP_CREST, become the
+ * pile `reposeMound` spreads; then every slab and column gets a rest pose
+ * on that mound — a slab as a broken plate (a seeded share of its bay),
+ * jostled, the upper storeys pushed out down the flanks (a few out into
+ * the street), tilted to the slope under it, and buried by how low in the
+ * stack it was. A slab's rest box is written here (`rx`… `az`, and the
+ * axis it tilts about); a column's centre on the plan (`rx`, `rz`) — its
+ * box is sized at landing, as before. Returns each piece's share of the
+ * heap's height (what the heap stands at once it is at rest), or null for
+ * no heap (nothing stacked).
+ */
+function planHeap(
+  c: Draft,
+  floor: Float64Array,
+  raw: readonly RawPiece[],
+): Float64Array | null {
+  const n = c.n;
+  let stack = 0;
+  let fx0 = Number.POSITIVE_INFINITY;
+  let fx1 = Number.NEGATIVE_INFINITY;
+  let fz0 = Number.POSITIVE_INFINITY;
+  let fz1 = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < n; i++) {
+    if (c.role[i] !== ROLE_SLAB) continue;
+    stack = Math.max(
+      stack,
+      (floor[i] as number) + 2 * (c.hy[i] as number) * T.rubbleRatio,
+    );
+    fx0 = Math.min(fx0, (c.ox[i] as number) - (c.hx[i] as number));
+    fx1 = Math.max(fx1, (c.ox[i] as number) + (c.hx[i] as number));
+    fz0 = Math.min(fz0, (c.oz[i] as number) - (c.hz[i] as number));
+    fz1 = Math.max(fz1, (c.oz[i] as number) + (c.hz[i] as number));
+  }
+  if (!(stack > 0.5)) return null;
+  const slope = reposeSlope(c.id);
+  const crest = HEAP_CREST * stack;
+  const run = reposeRun(crest, slope);
+  const heap = heapGrid(
+    fx0,
+    fx1,
+    fz0,
+    fz1,
+    run + 2 * HEAP_CELL_M,
+    HEAP_CELL_M,
+    HEAP_CELLS_MAX,
+  );
+  for (let i = 0; i < n; i++) {
+    if (c.role[i] !== ROLE_SLAB) continue;
+    const ox = c.ox[i] as number;
+    const oz = c.oz[i] as number;
+    const hx = c.hx[i] as number;
+    const hz = c.hz[i] as number;
+    const top = (floor[i] as number) + 2 * (c.hy[i] as number) * T.rubbleRatio;
+    pileBox(heap, ox - hx, ox + hx, oz - hz, oz + hz, (crest * top) / stack);
+  }
+  reposeMound(heap, slope, c.id, crest + 1);
+  c.heap = heap;
+  const fcx = (fx0 + fx1) / 2;
+  const fcz = (fz0 + fz1) / 2;
+  const hwx = Math.max(1, (fx1 - fx0) / 2);
+  const hwz = Math.max(1, (fz1 - fz0) / 2);
+  const lo = heap.cell;
+  const xHi = heap.x0 + heap.nx * heap.cell - lo;
+  const zHi = heap.z0 + heap.nz * heap.cell - lo;
+  const surface = (x: number, z: number) => Math.max(0, heapHeight(heap, x, z));
+  const share = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const role = c.role[i] as number;
+    if (role === ROLE_SHEET) continue;
+    const p = raw[i] as RawPiece;
+    const rand = pieceRand(c.id ^ 0x4ea9, p.chunk, p.sub);
+    const ox = c.ox[i] as number;
+    const oz = c.oz[i] as number;
+    const hx = c.hx[i] as number;
+    const hy = c.hy[i] as number;
+    const hz = c.hz[i] as number;
+    // Its storey's place in the stack: 0 at the bottom, 1 on top.
+    const u = Math.min(1, (floor[i] as number) / stack);
+    const nx = (ox - fcx) / hwx;
+    const nz = (oz - fcz) / hwz;
+    let x = ox + (rand() - 0.5) * 2 * PLATE_JOSTLE * hx;
+    let z = oz + (rand() - 0.5) * 2 * PLATE_JOSTLE * hz;
+    if (role === ROLE_SLAB && u > 0.4 && rand() < HEAP_SPILL) {
+      // Spilled: out to the toe on the side it was nearest.
+      const far = run * (0.6 + 0.4 * rand());
+      if (Math.abs(nx) >= Math.abs(nz)) x = fcx + Math.sign(nx) * (hwx + far);
+      else z = fcz + Math.sign(nz) * (hwz + far);
+    } else {
+      // The upper storeys slide furthest, an edge bay out down its flank.
+      const out = run * u * rand() * (role === ROLE_COLUMN ? 0.6 : 1);
+      x += Math.sign(nx) * nx * nx * out;
+      z += Math.sign(nz) * nz * nz * out;
+    }
+    x = Math.min(xHi, Math.max(heap.x0 + lo, x));
+    z = Math.min(zHi, Math.max(heap.z0 + lo, z));
+    const ground = surface(x, z);
+    // Buried by how low in the stack it was (the top third of the storeys
+    // lie on it, in a jumble).
+    const depth = (1 - u) ** 3 * ground;
+    share[i] = ground > 0 ? (ground - depth) / Math.max(ground, heap.top) : 0;
+    c.rx[i] = x;
+    c.rz[i] = z;
+    if (role !== ROLE_SLAB) {
+      // A column: on the mound where it lands (its box is sized later).
+      c.ry[i] = ground - depth;
+      continue;
+    }
+    // A broken plate: a seeded share of the bay, about as thick as the
+    // crushed storey.
+    const rhx = hx * (PLATE_MIN + PLATE_SPAN * rand());
+    const rhz = hz * (PLATE_MIN + PLATE_SPAN * rand());
+    const rhy = Math.max(0.2, hy * T.rubbleRatio * (0.7 + 0.6 * rand()));
+    // Tilted to the slope under it (from the mound a cell either side),
+    // about the axis across its steeper fall, then jostled ±14°. On the
+    // crest it lies at whatever angle it came down at.
+    const g = 2 * heap.cell;
+    const gx = (surface(x + g, z) - surface(x - g, z)) / (2 * g);
+    const gz = (surface(x, z + g) - surface(x, z - g)) / (2 * g);
+    let axis: number;
+    let phi: number;
+    if (Math.abs(gx) + Math.abs(gz) < 0.08) {
+      axis = rand() < 0.5 ? 0 : 1;
+      phi = (rand() - 0.5) * 0.9;
+    } else if (Math.abs(gx) >= Math.abs(gz)) {
+      // +phi about z raises the +x edge.
+      axis = 1;
+      phi = Math.atan(gx);
+    } else {
+      // +phi about x lowers the +z edge.
+      axis = 0;
+      phi = -Math.atan(gz);
+    }
+    phi += (rand() - 0.5) * 0.5;
+    phi = Math.max(-PLATE_TILT_MAX, Math.min(PLATE_TILT_MAX, phi));
+    c.axis[i] = axis;
+    c.rhx[i] = rhx;
+    c.rhy[i] = rhy;
+    c.rhz[i] = rhz;
+    c.rphi[i] = phi;
+    const cs = Math.abs(Math.cos(phi));
+    const sn = Math.abs(Math.sin(phi));
+    c.ax[i] = axis === 1 ? cs * rhx + sn * rhy : rhx;
+    c.ay[i] = vertExtent(axis, phi, rhx, rhy, rhz);
+    c.az[i] = axis === 0 ? sn * rhy + cs * rhz : rhz;
+    // Half buried in the mound at its depth (never through the street).
+    c.ry[i] = Math.max(
+      c.ay[i] as number,
+      ground - depth + rhy * (1.4 * rand() - 0.6),
+    );
+  }
+  return share;
+}
+
 /**
  * Trajectories, landings, rest boxes and bounds for `raw` — the shared
  * second half of a building section's and (D5) a crane's debris. A topple
@@ -1858,7 +2087,11 @@ function assembleCollapse(
     ax: f64(),
     ay: f64(),
     az: f64(),
+    slide: f64(),
     endMs: 0,
+    heap: null,
+    heapFrom: 0,
+    heapRise: null,
     g: T.gravity,
     squashS: T.squashMs / 1000,
     leadMs: T.leadMs,
@@ -1879,6 +2112,8 @@ function assembleCollapse(
    * ground). */
   const floor = f64();
   const rands = raw.map((p) => pieceRand(meta.id, p.chunk, p.sub));
+  /** G9: each piece's share of its heap's height at rest (null: no heap). */
+  let heapShare: Float64Array | null = null;
 
   if (style === PANCAKE) {
     // Progressive collapse: the creep, then the upper block lets go and
@@ -2034,6 +2269,8 @@ function assembleCollapse(
       floor[i] = y;
       if (role === ROLE_SLAB) placed.push(i);
     }
+    // G9: and the stack slumps into a heap.
+    if (meta.kind === KIND_BUILDING) heapShare = planHeap(c, floor, raw);
   } else {
     // Topple: the section tips over its base edge on the weak side.
     const xAxisFall = dir === DIR_NEG_X || dir === DIR_POS_X;
@@ -2108,6 +2345,21 @@ function assembleCollapse(
     c.lz[i] = pose.z;
     c.lphi[i] = pose.phi;
     c.lhy[i] = pose.hy;
+    // G9: a heap's piece slides from where it landed to the pose planHeap
+    // gave it (a slab's whole rest box; a column's place on the mound).
+    const heaped = heapShare !== null && role !== ROLE_SHEET;
+    const tx = c.rx[i] as number;
+    const ty = c.ry[i] as number;
+    const tz = c.rz[i] as number;
+    if (heaped && role === ROLE_SLAB) {
+      const slide = Math.min(
+        SLIDE_MAX_S,
+        Math.hypot(tx - pose.x, ty - pose.y, tz - pose.z) / SLIDE_SPEED,
+      );
+      c.slide[i] = slide;
+      end = Math.max(end, (c.start[i] as number) + land + SQUASH_S + slide);
+      continue;
+    }
     const quarter = Math.round(pose.phi / HALF_PI);
     const odd = Math.abs(quarter) % 2 === 1;
     const axis = c.axis[i] as number;
@@ -2151,6 +2403,17 @@ function assembleCollapse(
     c.rx[i] = pose.x;
     c.ry[i] = (floor[i] as number) + (c.ay[i] as number);
     c.rz[i] = pose.z;
+    if (heaped) {
+      // A column stub: two thirds of it out of the mound, leaning.
+      c.rx[i] = tx;
+      c.ry[i] = Math.max(c.ay[i] as number, ty + 0.4 * (c.ay[i] as number));
+      c.rz[i] = tz;
+      c.slide[i] = Math.min(
+        SLIDE_MAX_S,
+        Math.hypot(tx - pose.x, (c.ry[i] as number) - pose.y, tz - pose.z) /
+          SLIDE_SPEED,
+      );
+    }
     // D8: a toppled building's rubble never comes to rest back over its own
     // footprint (behind the pivot edge) — the stump stands there, and rubble
     // lying on a chunk that can later be shot away would float. A slow piece
@@ -2182,11 +2445,48 @@ function assembleCollapse(
         else c.rz[i] = moved;
       }
     }
-    end = Math.max(end, (c.start[i] as number) + land + SQUASH_S);
+    end = Math.max(
+      end,
+      (c.start[i] as number) + land + SQUASH_S + (c.slide[i] as number),
+    );
   }
   c.endMs = end * 1000;
+  if (heapShare !== null) riseHeap(c, heapShare);
   sweepBounds(c);
   return c;
+}
+
+/** G9: when `c`'s heap rises: from the first of its pieces at rest, to the
+ * share of full height its highest piece at rest so far stands at (`share`,
+ * planHeap's), all of it once the collapse lies still. */
+function riseHeap(c: Draft, share: Float64Array): void {
+  const at = new Float64Array(c.n);
+  let from = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < c.n; i++) {
+    if (c.role[i] === ROLE_SHEET) continue;
+    at[i] =
+      ((c.start[i] as number) +
+        (c.land[i] as number) +
+        c.squashS +
+        (c.slide[i] as number)) *
+      1000;
+    from = Math.min(from, at[i] as number);
+  }
+  if (!(from < c.endMs)) from = 0;
+  const rise = new Float32Array(HEAP_RISE_STEPS + 1);
+  for (let j = 0; j <= HEAP_RISE_STEPS; j++) {
+    const t = from + ((c.endMs - from) * j) / HEAP_RISE_STEPS;
+    let k = j > 0 ? (rise[j - 1] as number) : 0;
+    for (let i = 0; i < c.n; i++) {
+      if (c.role[i] !== ROLE_SHEET && (at[i] as number) <= t) {
+        k = Math.max(k, share[i] as number);
+      }
+    }
+    rise[j] = Math.min(1, k);
+  }
+  rise[HEAP_RISE_STEPS] = 1;
+  c.heapFrom = from;
+  c.heapRise = rise;
 }
 
 /** Samples of a hinge's swing for the swept bounds. */
@@ -2266,6 +2566,20 @@ function sweepBounds(c: Draft): void {
   }
   grow(all, rest.x0, rest.y0, rest.z0, 0);
   grow(all, rest.x1, rest.y1, rest.z1, 0);
+  // G9: and the heap the rubble lies in — its rest only: the falling
+  // debris' zone (`bounds`, the bots' and the impacts' reject) never spans
+  // the low mound (collideCollapses tests the heap before any reject).
+  const heap = c.heap;
+  if (heap !== null) {
+    grow(rest, heap.x0, 0, heap.z0, 0);
+    grow(
+      rest,
+      heap.x0 + heap.nx * heap.cell,
+      heap.top,
+      heap.z0 + heap.nz * heap.cell,
+      0,
+    );
+  }
 }
 
 // --- D10 floor events --------------------------------------------------------
@@ -2679,7 +2993,7 @@ export function collapseImpacts(
 /** What a collapse collision reports. Allocated only on a hit. */
 export interface CollapseHit {
   collapse: Collapse;
-  /** The piece hit, or (DS1) −1 for the collapse's rubble heap. */
+  /** The piece hit, or (DS1, G9) −1 for the collapse's rubble heap. */
   piece: number;
   /** The piece was still moving (or about to): falling debris, not rubble. */
   falling: boolean;
@@ -2784,8 +3098,11 @@ export function collideCollapses(
     // DS1: a physics collapse — its frames at this clock, and its heap.
     const phys = c.phys;
     if (phys !== null) {
-      if (phys.heap && sphereHitsHeap(phys.heap, dx, pos.y, dz, radius)) {
-        if (!fallingOnly) return { collapse: c, piece: -1, falling: false };
+      if (phys.heap !== null && !fallingOnly) {
+        const k = phys.heapShare(tMs);
+        if (k > 0 && sphereHitsHeap(phys.heap, dx, pos.y, dz, radius, k)) {
+          return { collapse: c, piece: -1, falling: false };
+        }
       }
       if (outside(phys.bounds, dx, pos.y, dz, radius + phys.reach)) continue;
       poseClock.tMs = tMs;
@@ -2803,6 +3120,14 @@ export function collideCollapses(
         }
       }
       continue;
+    }
+    // G9: a pancake's heap, at the height it has risen to.
+    const heap = c.heap;
+    if (heap !== null && !fallingOnly) {
+      const k = heapShareAt(c, tMs);
+      if (k > 0 && sphereHitsHeap(heap, dx, pos.y, dz, radius, k)) {
+        return { collapse: c, piece: -1, falling: false };
+      }
     }
     if (tMs >= c.t0 + c.endMs) {
       if (fallingOnly || outside(c.restBounds, dx, pos.y, dz, radius)) continue;

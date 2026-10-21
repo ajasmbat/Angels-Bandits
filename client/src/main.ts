@@ -2780,7 +2780,11 @@ socket.events.onSnapshot = (snap) => {
   if (qaAirforce && qaRoofline) qaAirforceExtend(qaAirforce, snap, qaRoofline);
   remotes.ingest(snap);
   reactor.observeSnapshot(snap, socket.selfId); // L1 low passes + own track
-  const self = snap.players.find((p) => p.id === socket.selfId);
+  // G9: a loop, not find() (a closure per snapshot).
+  let self: (typeof snap.players)[number] | undefined;
+  for (let k = 0; k < snap.players.length; k++) {
+    if (snap.players[k]?.id === socket.selfId) self = snap.players[k];
+  }
   if (self) {
     selfHp = self.hp;
     selfProt = self.prot;
@@ -7599,7 +7603,7 @@ const frame = (rafNow: number): void => {
   const collapseViewer = qaView ? qaView.eye : chase.position;
   dust.update(socket.collapses.list, collapseViewer, collapseMs, camera.aspect);
   ruinSmoke.update(socket.collapses.list, collapseViewer, collapseMs, now);
-  rubbleHeaps.update(socket.collapses.list, collapseViewer);
+  rubbleHeaps.update(socket.collapses.list, collapseViewer, collapseMs);
   // DS1: the local host's debris physics LODs and budgets by this camera
   // (the lab's eye in the lab) and tier — throttled to a few messages a
   // second.

@@ -117,6 +117,10 @@ import {
 import { STREAK_TIERS, isMedalKind } from "@angels-bandits/common/medals";
 import {
   PROTOCOL_VERSION,
+  SNAP_HEAD,
+  SNAP_STRIDE,
+  blankSnapshotEntry,
+  decodePackedEntry,
   decodeSnapshotEntry,
 } from "@angels-bandits/common/net";
 import type {
@@ -135,6 +139,7 @@ import type {
   ScoreEntry,
   ServerMsg,
   ShipDownMsg,
+  SnapshotEntry,
   SnapshotMsg,
   WelcomeMsg,
 } from "@angels-bandits/common/protocol";
@@ -160,7 +165,12 @@ import { PoseCadence, RenderClock } from "./clock";
 import { InterpDelay } from "./delay";
 import { reconnectDelayMs } from "./reconnect";
 
+/** A link that sends no id table (never a packed snapshot's). */
+const NO_IDS: readonly string[] = [];
+
 export interface GameSocketEvents {
+  /** G9: the snapshot is the socket's own on the solo path (decoded into
+   * objects it reuses for the next one) — read it, copy what you keep. */
   onSnapshot?: (snap: SnapshotMsg) => void;
   onPlayerJoined?: (player: RosterEntry) => void;
   onPlayerLeft?: (id: string) => void;
@@ -369,8 +379,10 @@ export class GameSocket {
   private attempt = 0;
   /** Last time anything arrived from the server (local clock). */
   private lastHeardMs = performance.now();
-  /** serverTime − performance.now(), estimated from stamped snapshots. */
-  private clockOffset: number | null = null;
+  /** serverTime − performance.now(), estimated from stamped snapshots;
+   * NaN until the first (G9: a plain double — a `number | null` field boxed
+   * a fresh number on every snapshot). */
+  private clockOffset = Number.NaN;
   /** Fixed 30 Hz pose upload deadline (O2). */
   private readonly cadence = new PoseCadence(POSE_INTERVAL_MS);
   /** The adaptive interpolation buffer, fed by snapshot arrival times. */
@@ -516,7 +528,12 @@ export class GameSocket {
     ws.addEventListener("message", (ev) => {
       if (ws !== this.ws) return;
       this.lastHeardMs = performance.now();
-      this.handle(ev);
+      // G9: a solo snapshot comes packed (client/src/sim/local.ts) — routed
+      // here, not through handle() (one big function: the check alone
+      // allocated there).
+      if (ev.data instanceof Float64Array)
+        this.packed(ev.data, ev.ids ?? NO_IDS);
+      else this.handle(ev);
     });
     ws.addEventListener("close", () => {
       if (ws === this.ws) this.dropped();
@@ -977,7 +994,7 @@ export class GameSocket {
    * the render time: every system then poses against the same instant.
    */
   tickRenderClock(frameMs: number): FrameClock {
-    if (this.clockOffset === null) {
+    if (Number.isNaN(this.clockOffset)) {
       this.frame = { frameMs, time: null, target: null, serverNow: null };
       return this.frame;
     }
@@ -1020,22 +1037,61 @@ export class GameSocket {
     return this.delay.jitter;
   }
 
+  /** A snapshot taken at server time `time` arrived now: the arrival
+   * jitter and the clock offset. */
+  private snapshotArrived(time: number): void {
+    this.snapshots++;
+    const arrival = this.unpaused(performance.now());
+    this.delay.observe(arrival);
+    // Each sample of serverTime − now is the true offset minus that
+    // packet's latency, so the LARGEST sample is the best estimate; adapt
+    // slowly downward to track drift or a route change.
+    const sample = time - arrival;
+    if (Number.isNaN(this.clockOffset) || sample > this.clockOffset) {
+      this.clockOffset = sample;
+    } else {
+      this.clockOffset += (sample - this.clockOffset) * 0.02;
+    }
+  }
+
+  /** G9: the solo path's snapshot, decoded into objects reused for the
+   * next one (the pool grows only with the room). */
+  private readonly packedSnap: SnapshotMsg = {
+    type: "snapshot",
+    time: 0,
+    players: [],
+  };
+  private readonly packedPool: SnapshotEntry[] = [];
+
+  /** G9: a packed snapshot (client/src/sim/local.ts), `ids` its link's id
+   * table — no text, no JSON, nothing allocated once the pool is full. */
+  private packed(data: Float64Array, ids: readonly string[]): void {
+    const time = data[0] as number;
+    const n = data[1] as number;
+    this.snapshotArrived(time);
+    const snap = this.packedSnap;
+    const players = snap.players;
+    const pool = this.packedPool;
+    snap.time = time;
+    while (pool.length < n) pool.push(blankSnapshotEntry());
+    if (players.length > n) players.length = n;
+    for (let k = 0; k < n; k++) {
+      const o = SNAP_HEAD + k * SNAP_STRIDE;
+      players[k] = decodePackedEntry(
+        data,
+        o,
+        ids[data[o] as number] ?? "",
+        pool[k] as SnapshotEntry,
+      );
+    }
+    this.events.onSnapshot?.(snap);
+  }
+
   private handle(ev: LinkEvent): void {
     const msg = JSON.parse(ev.data as string) as ServerMsg;
     switch (msg.type) {
       case "snapshot": {
-        this.snapshots++;
-        const arrival = this.unpaused(performance.now());
-        this.delay.observe(arrival);
-        // Each sample of serverTime − now is the true offset minus that
-        // packet's latency, so the LARGEST sample is the best estimate; adapt
-        // slowly downward to track drift or a route change.
-        const sample = msg.time - arrival;
-        if (this.clockOffset === null || sample > this.clockOffset) {
-          this.clockOffset = sample;
-        } else {
-          this.clockOffset += (sample - this.clockOffset) * 0.02;
-        }
+        this.snapshotArrived(msg.time);
         const decoded: SnapshotMsg = {
           type: "snapshot",
           time: msg.time,

@@ -41,6 +41,8 @@ const scratchB = new THREE.Quaternion();
 
 export class InterpolationBuffer {
   private samples: Sample[] = [];
+  /** G9: samples dropped off the front, reused by the next push. */
+  private readonly spare: Sample[] = [];
 
   /** Newest sample's server time, or null when empty. */
   get latestTime(): number | null {
@@ -48,17 +50,29 @@ export class InterpolationBuffer {
     return last === undefined ? null : last.time;
   }
 
-  /** Record one snapshot's pose. Times must be the server's snapshot clock. */
+  /** Record one snapshot's pose. Times must be the server's snapshot clock.
+   * G9: `pose` is COPIED (into a recycled sample): a solo snapshot's poses
+   * are the socket's own, reused for the next one. */
   push(time: number, pose: Pose): void {
     // Snapshots arrive in order; drop the rare stale straggler outright.
     const newest = this.latestTime;
     if (newest !== null && time <= newest) return;
-    this.samples.push({ time, pose });
+    const s = this.spare.pop() ?? {
+      time: 0,
+      pose: {
+        pos: { x: 0, y: 0, z: 0 },
+        quat: { x: 0, y: 0, z: 0, w: 1 },
+        speed: 0,
+      },
+    };
+    s.time = time;
+    copyPose(pose, s.pose);
+    this.samples.push(s);
     const cutoff = time - MAX_SAMPLE_AGE_MS;
     while (this.samples.length > 1) {
       const head = this.samples[0];
       if (head === undefined || head.time >= cutoff) break;
-      this.samples.shift();
+      this.spare.push(this.samples.shift() as Sample);
     }
   }
 

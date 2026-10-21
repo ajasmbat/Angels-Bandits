@@ -2780,7 +2780,11 @@ socket.events.onSnapshot = (snap) => {
   if (qaAirforce && qaRoofline) qaAirforceExtend(qaAirforce, snap, qaRoofline);
   remotes.ingest(snap);
   reactor.observeSnapshot(snap, socket.selfId); // L1 low passes + own track
-  const self = snap.players.find((p) => p.id === socket.selfId);
+  // G9: a loop, not find() (a closure per snapshot).
+  let self: (typeof snap.players)[number] | undefined;
+  for (let k = 0; k < snap.players.length; k++) {
+    if (snap.players[k]?.id === socket.selfId) self = snap.players[k];
+  }
   if (self) {
     selfHp = self.hp;
     selfProt = self.prot;

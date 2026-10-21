@@ -5,6 +5,12 @@
 // socket's join, resume and watchdog code is the same code over either.
 // `?mp=1` (a hidden developer toggle) keeps the ws to the remote server.
 //
+// G9: a snapshot arrives PACKED (common/src/net.ts packSnapshot) and is
+// handed on as its Float64Array — `message` with that as `data` and the
+// link's id table as `ids` (GameSocket decodes it into objects it reuses):
+// nothing per snapshot is allocated on this side, and the one event object
+// is reused. Every other frame is still the JSON text a ws would give.
+//
 // The worker starts once per page, as early as the boot can start it, so
 // the host has built its city while the player is still on the start
 // screen. Host flags ride `?sim=KEY:VALUE,KEY:VALUE` — the AB_* switches and
@@ -37,6 +43,8 @@ export interface LinkEvent {
   data?: unknown;
   code?: number;
   reason?: string;
+  /** G9: a packed snapshot's id table (the index → the id). */
+  ids?: readonly string[];
 }
 
 /** Is this page on the multiplayer server (`?mp=1`) instead of the local
@@ -136,6 +144,10 @@ export class WorkerLink implements Link {
     string,
     { fn: (ev: LinkEvent) => void; once: boolean }[]
   >();
+  /** G9: this connection's id table, and the event a packed snapshot is
+   * handed on in (reused: its listeners read it there and then). */
+  private readonly ids: string[] = [];
+  private readonly snapEvent: LinkEvent = { data: null, ids: this.ids };
 
   constructor() {
     startLocalHost();
@@ -174,6 +186,14 @@ export class WorkerLink implements Link {
     if (msg.t === "open") {
       this.readyState = OPEN;
       this.emit("open", {});
+    } else if (msg.t === "snap") {
+      this.snapEvent.data = msg.data;
+      this.emit("message", this.snapEvent);
+      this.snapEvent.data = null;
+    } else if (msg.t === "ids") {
+      for (let k = 0; k < msg.ids.length; k++) {
+        this.ids[msg.base + k] = msg.ids[k] as string;
+      }
     } else if (msg.t === "frame") {
       this.emit("message", { data: decoder.decode(msg.data) });
     } else if (msg.t === "close") {
@@ -198,10 +218,20 @@ export class WorkerLink implements Link {
   private emit(type: string, ev: LinkEvent): void {
     const list = this.listeners.get(type);
     if (!list) return;
-    this.listeners.set(
-      type,
-      list.filter((l) => !l.once),
-    );
-    for (const l of list) l.fn(ev);
+    // G9: the list is copied only when a once-listener leaves it (not on
+    // every message).
+    let once = false;
+    for (let k = 0; k < list.length; k++) {
+      if ((list[k] as (typeof list)[number]).once) once = true;
+    }
+    if (once) {
+      this.listeners.set(
+        type,
+        list.filter((l) => !l.once),
+      );
+    }
+    for (let k = 0; k < list.length; k++) {
+      (list[k] as (typeof list)[number]).fn(ev);
+    }
   }
 }

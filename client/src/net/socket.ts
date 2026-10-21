@@ -528,7 +528,12 @@ export class GameSocket {
     ws.addEventListener("message", (ev) => {
       if (ws !== this.ws) return;
       this.lastHeardMs = performance.now();
-      this.handle(ev);
+      // G9: a solo snapshot comes packed (client/src/sim/local.ts) — routed
+      // here, not through handle() (one big function: the check alone
+      // allocated there).
+      if (ev.data instanceof Float64Array)
+        this.packed(ev.data, ev.ids ?? NO_IDS);
+      else this.handle(ev);
     });
     ws.addEventListener("close", () => {
       if (ws === this.ws) this.dropped();
@@ -1083,10 +1088,6 @@ export class GameSocket {
   }
 
   private handle(ev: LinkEvent): void {
-    if (ev.data instanceof Float64Array) {
-      this.packed(ev.data, ev.ids ?? NO_IDS);
-      return;
-    }
     const msg = JSON.parse(ev.data as string) as ServerMsg;
     switch (msg.type) {
       case "snapshot": {

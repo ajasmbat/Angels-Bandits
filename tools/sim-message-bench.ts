@@ -28,6 +28,9 @@
 // messages, median of five runs of 3000 — the method of
 // tools/destruction-bench.ts. A judged row passes at <= 64 B a message
 // (V8's sampling noise; a decoded object per plane is ~6 KB). Exits 1 over.
+//
+// G9 on the runner (61 planes): the JSON frame 34 174 B a snapshot — about
+// 680 KB a second of garbage at 20 Hz — the packed path 17 B, the poses 0.
 
 import { Session } from "node:inspector/promises";
 import {

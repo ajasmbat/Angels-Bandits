@@ -28,9 +28,8 @@ import {
   heapHeight,
   pieceMoving,
 } from "@angels-bandits/common/city/physpose";
-import { REPOSE_MAX_DEG } from "@angels-bandits/common/city/repose";
 import { FACE_POS_X } from "@angels-bandits/common/city/structure";
-import { PLAYER_RADIUS, STREET_WIDTH } from "@angels-bandits/common/constants";
+import { PLAYER_RADIUS } from "@angels-bandits/common/constants";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   DebrisPhysics,
@@ -213,7 +212,7 @@ describe("DS1 settling, budgets and LOD", () => {
       if (!heap) throw new Error("no heap");
       expect(heap.top).toBeGreaterThan(0);
       // G9: slumped to the angle of repose round the pile — flyable: never
-      // above the pile it buries, nor taller than its street can hold.
+      // above the pile it buries.
       let pile = 0;
       const p = blankPose();
       for (let i = 0; i < c.n; i++) {
@@ -221,9 +220,6 @@ describe("DS1 settling, budgets and LOD", () => {
         pile = Math.max(pile, p.y + Math.hypot(p.hx, p.hy, p.hz));
       }
       expect(heap.top).toBeLessThanOrEqual(pile);
-      expect(heap.top).toBeLessThanOrEqual(
-        STREET_WIDTH * Math.tan((REPOSE_MAX_DEG * Math.PI) / 180) + 1,
-      );
       // Zero at its rim, so it meets the street.
       expect(heapHeight(heap, heap.x0, heap.z0)).toBe(0);
     }

@@ -100,8 +100,8 @@ import { heapHeight } from "../../src/city/physpose";
 import {
   heapGrid,
   pileBox,
-  reposeFit,
   reposeMound,
+  reposeRun,
   reposeSlope,
 } from "../../src/city/repose";
 import { mulberry32 } from "../../src/city/rng";
@@ -1744,10 +1744,9 @@ function planHeap(
     fz1 = Math.max(fz1, (c.oz[i] as number) + (c.hz[i] as number));
   }
   if (!(stack > 0.5)) return null;
-  const fit = reposeFit(HEAP_CREST * stack, reposeSlope(c.id));
-  const slope = fit.slope;
-  const crest = fit.crest;
-  const run = crest / slope;
+  const slope = reposeSlope(c.id);
+  const crest = HEAP_CREST * stack;
+  const run = reposeRun(crest, slope);
   const heap = heapGrid(
     fx0,
     fx1,

@@ -36,21 +36,6 @@ export function reposeSlope(id: number): number {
   return Math.tan((deg * Math.PI) / 180);
 }
 
-/**
- * A heap's crest and slope with its run-out (crest ÷ slope, past the pile)
- * held to one street's width: steeper first, up to REPOSE_MAX_DEG, then
- * lower — the rubble fills its street, it does not cross into the next
- * block.
- */
-export function reposeFit(
-  crest: number,
-  slope: number,
-): { crest: number; slope: number } {
-  const steepest = Math.tan((REPOSE_MAX_DEG * Math.PI) / 180);
-  const s = Math.max(slope, Math.min(steepest, crest / STREET_WIDTH));
-  return { crest: Math.min(crest, STREET_WIDTH * s), slope: s };
-}
-
 /** A hash of three integers into [0, 1). */
 export function hash01(a: number, b: number, c: number): number {
   let h = Math.imul(a + 1, 0x9e3779b1);
@@ -133,13 +118,24 @@ export function pileBox(
   }
 }
 
+/** How far a heap runs out past its pile, at most, m: it fills its street,
+ * it does not cross into the next block. */
+export const HEAP_RUN_MAX_M = STREET_WIDTH;
+
+/** The run-out of a heap whose crest is `crest` (m) at `slope`, m. */
+export const reposeRun = (crest: number, slope: number): number =>
+  Math.min(HEAP_RUN_MAX_M, crest / slope);
+
 /**
  * Slump the pile heights in `heap` to the angle of repose (`slope` =
  * tan θ): every vertex is raised to the height its neighbours' pile holds
  * up — h(p) = max over q of h(q) − slope·|p − q|, on the grid's 8-neighbour
  * chamfer (two passes, exact for it) — then each vertex is knocked up or
  * down a little by its own hash (seed `id`), clamped to `cap` and zero on
- * the rim. Sets `top`.
+ * the rim. Sets `top`. First the pile is shouldered in from its edge
+ * (no higher than slope × (HEAP_RUN_MAX_M + its distance inside the pile)),
+ * so the slope out of it never runs further than HEAP_RUN_MAX_M while the
+ * mound still rises over the lot to bury a tall pile.
  */
 export function reposeMound(
   heap: RubbleHeap,
@@ -151,6 +147,40 @@ export function reposeMound(
   const row = nx + 1;
   const s1 = slope * heap.cell;
   const s2 = s1 * Math.SQRT2;
+  // The distance inside the pile, m (8-neighbour chamfer, two passes)…
+  const inside = new Float32Array(h.length);
+  const c1 = heap.cell;
+  const c2 = c1 * Math.SQRT2;
+  for (let j = 0; j <= nz; j++) {
+    for (let k = 0; k <= nx; k++) {
+      const at = j * row + k;
+      if (!((h[at] as number) > 0)) continue;
+      let d = Number.POSITIVE_INFINITY;
+      if (k > 0) d = Math.min(d, (inside[at - 1] as number) + c1);
+      if (j > 0) {
+        d = Math.min(d, (inside[at - row] as number) + c1);
+        if (k > 0) d = Math.min(d, (inside[at - row - 1] as number) + c2);
+        if (k < nx) d = Math.min(d, (inside[at - row + 1] as number) + c2);
+      }
+      inside[at] = k > 0 && j > 0 ? d : c1;
+    }
+  }
+  for (let j = nz; j >= 0; j--) {
+    for (let k = nx; k >= 0; k--) {
+      const at = j * row + k;
+      if (!((h[at] as number) > 0)) continue;
+      let d = inside[at] as number;
+      if (k < nx) d = Math.min(d, (inside[at + 1] as number) + c1);
+      if (j < nz) {
+        d = Math.min(d, (inside[at + row] as number) + c1);
+        if (k < nx) d = Math.min(d, (inside[at + row + 1] as number) + c2);
+        if (k > 0) d = Math.min(d, (inside[at + row - 1] as number) + c2);
+      }
+      inside[at] = d;
+      // …which shoulders the pile in from its edge.
+      h[at] = Math.min(h[at] as number, slope * (HEAP_RUN_MAX_M + d));
+    }
+  }
   // Forward: from the row above and the vertex to the left.
   for (let j = 0; j <= nz; j++) {
     for (let k = 0; k <= nx; k++) {

@@ -75,8 +75,8 @@ import {
 import {
   heapGrid,
   pileBox,
-  reposeFit,
   reposeMound,
+  reposeRun,
   reposeSlope,
 } from "@angels-bandits/common/city/repose";
 import {
@@ -1694,13 +1694,14 @@ export class DebrisPhysics implements PhysicsHost {
       top = Math.max(top, up);
     }
     if (!(x1 > x0) || !(z1 > z0) || !(top > 0.5)) return null;
-    const { crest, slope } = reposeFit(HEAP_CREST * top, reposeSlope(c.id));
+    const slope = reposeSlope(c.id);
+    const crest = HEAP_CREST * top;
     const heap = heapGrid(
       x0,
       x1,
       z0,
       z1,
-      crest / slope + 2 * HEAP_CELL,
+      reposeRun(crest, slope) + 2 * HEAP_CELL,
       HEAP_CELL,
       HEAP_CELLS_MAX,
     );

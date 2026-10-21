@@ -31,7 +31,13 @@ every reader poses from the same frame bytes.
   `client/src/render/rubble-heap.ts` as two triangles per square, split on
   the (0,0)–(1,1) diagonal. `heapHeight` collides with exactly those
   triangles. Change the split in one and the plane hits air or flies
-  through the mound.
+  through the mound. Since G9 every pancake has one — the physics' (raised
+  at settle, `raiseHeap`) and the closed form's (`Collapse.heap`, built
+  with the rest poses in `planHeap`) — both slumped by the one rule in
+  `common/src/city/repose.ts`, and both RISE: the mesh is scaled in y by
+  `PhysPoses.heapShare(t)` / `heapShareAt(c, t)` and `sphereHitsHeap` takes
+  the same share as `rise`. A reader of a heap that skips the share
+  collides with a mound that is not drawn yet.
 
 **What stays analytic:** multiplayer (the Node shell never builds a
 physics world), cranes, collapses past `PHYS_LOD_M` from the camera, and
